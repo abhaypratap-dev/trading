@@ -25,16 +25,25 @@ from yonexis.backtest.engine import BacktestResult, normalize_candles
 from .features import signal_features
 
 try:  # LightGBM when available, sklearn otherwise
-    from lightgbm import LGBMClassifier
+    from lightgbm import LGBMClassifier, LGBMRegressor
 
     def _base_model():
         return LGBMClassifier(n_estimators=300, learning_rate=0.03, num_leaves=15, min_child_samples=20,
                               subsample=0.8, subsample_freq=1, colsample_bytree=0.8, verbose=-1)
+
+    def _base_regressor():
+        # squared error estimates the MEAN R (= expected value, what the +0.05R gate needs); R is clipped upstream
+        return LGBMRegressor(objective="regression", n_estimators=300, learning_rate=0.03, num_leaves=15,
+                             min_child_samples=50, subsample=0.8, subsample_freq=1, colsample_bytree=0.8, verbose=-1)
 except Exception:  # pragma: no cover
-    from sklearn.ensemble import HistGradientBoostingClassifier
+    from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor
 
     def _base_model():
         return HistGradientBoostingClassifier(max_iter=300, learning_rate=0.05, max_leaf_nodes=15)
+
+    def _base_regressor():
+        return HistGradientBoostingRegressor(max_iter=300, learning_rate=0.05, max_leaf_nodes=15,
+                                             min_samples_leaf=50)
 
 
 def build_meta_dataset(result: BacktestResult, data: dict[str, pd.DataFrame]) -> pd.DataFrame:

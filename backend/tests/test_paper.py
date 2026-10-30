@@ -624,3 +624,38 @@ def test_ai_selectivity_threshold_is_validated_on_later_data():
     loose = [r for r in sel["table"] if r["min_p"] == 0.35][0]["all"]
     assert loose["trades"] > strict["trades"] > 0 and strict["win_rate"] > loose["win_rate"]
     assert sel["validation"]["passed"] and sel["recommended_min_p"] in selector.THRESHOLDS
+
+
+def _selector_rows(n, seed, edge):
+    import numpy as np
+    from yonexis.ml import selector
+    rng = np.random.default_rng(seed)
+    ts = pd.date_range("2024-01-01 09:30", periods=n, freq="47min")
+    ds = pd.DataFrame({k: rng.normal(size=n) for k in selector.FEATS})
+    win = rng.uniform(size=n) < 0.45
+    big = ds["vwap_dist_atr"] > 0.5 if edge else rng.uniform(size=n) < 0.3     # edge: feature decides the SIZE of the win
+    r = np.where(win, np.where(big, 3.0, 0.6), -1.0) + rng.normal(0, 0.1, n)
+    pnl = r * 500 - 82
+    return ds.assign(_strategy=rng.choice(["a", "b"], n), _family="f", _symbol=[f"S{i % 30}" for i in range(n)], _ts=ts,
+                     _entry_ts=ts, _exit_ts=ts + pd.Timedelta(minutes=20), _r=r, _net_pnl=pnl, label=(pnl > 0).astype(int))
+
+
+def test_profit_model_learns_trade_size_that_win_loss_cannot():
+    from yonexis.ml import selector
+    out = selector.train(_selector_rows(6000, 1, edge=True))
+    rep, model = out["report"], out["model"]
+    acc = rep["accuracy"]
+    assert rep["ev_source"] == "regression" and model.meta["ev_source"] == "regression" and model.r_model is not None
+    q = acc["profit"]["quintiles"]
+    assert acc["profit"]["rank_ic"] >= 0.05 and q[-1]["actual_r"] > q[0]["actual_r"] + 0.5
+    assert {"accuracy", "always_majority", "precision", "auc", "calibration"} <= set(acc["win_loss"])
+    assert rep["beats_baseline"] and model.metrics["oos_rank_ic"] == acc["profit"]["rank_ic"]
+    sc = selector.score(model, _selector_rows(50, 2, edge=True))
+    big = sc["vwap_dist_atr"] > 0.5
+    assert sc.loc[big, "ev"].mean() > sc.loc[~big, "ev"].mean()               # live scoring uses the profit model
+
+
+def test_selector_with_no_edge_stays_in_shadow():
+    from yonexis.ml import selector
+    rep = selector.train(_selector_rows(6000, 3, edge=False))["report"]
+    assert not rep["beats_baseline"] and abs(rep["accuracy"]["profit"]["rank_ic"]) < 0.05

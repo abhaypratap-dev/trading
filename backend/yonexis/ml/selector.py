@@ -8,12 +8,15 @@ trade we know, at decision time only:
     previous day's move, day of week;
   * index context (NIFTY futures/spot when available): index move so far and its trend;
   * which strategy / family proposed it and the side.
-Label: did the trade end profitable after costs (plus the R multiple for expected value).
-
-The model (gradient boosting, purged time-ordered CV, calibrated) outputs P(win). Expected value per candidate =
-P(win) * avg_win_R(strategy) - (1 - P(win)) * avg_loss_R(strategy). The picker takes, per stock, only the best
-candidate whose P(win) >= min_p and EV >= min_ev, one position at a time. Out-of-sample results of exactly this
-rule are reported next to "every strategy" and "best single strategy" so you can see if the AI adds value.
+Two models learn from the same rows (gradient boosting, purged time-ordered CV):
+  * win/loss model (calibrated): P(win) = did the trade end profitable after costs;
+  * profit model: expected R = net P&L after costs / amount risked. This is what matters with costs: a 46% win
+    chance can be a good or a bad trade depending on how big the wins and losses are.
+Expected value per candidate comes from the profit model, or from P(win) * avg_win_R(strategy) -
+(1 - P(win)) * avg_loss_R(strategy) when that ranked the earlier held-back trades better (chosen on the earlier
+half, reported on the later half). The picker takes, per stock, only the best candidate whose P(win) >= min_p and
+EV >= min_ev, one position at a time. Out-of-sample results of exactly this rule are reported next to "every
+strategy" and "best single strategy", with prediction accuracy for both models, so you can see if the AI adds value.
 """
 from __future__ import annotations
 
@@ -149,10 +152,17 @@ def design(ds: pd.DataFrame, strategies: list[str], families: list[str]) -> pd.D
     return X
 
 
+R_CLIP = (-5.0, 10.0)
+
+
+def clean_r(r: pd.Series) -> pd.Series:
+    return r.astype(float).replace([np.inf, -np.inf], np.nan).clip(*R_CLIP)
+
+
 def strategy_r_stats(ds: pd.DataFrame) -> dict:
     out = {}
     for s, g in ds.groupby("_strategy"):
-        r = g["_r"].replace([np.inf, -np.inf], np.nan).dropna().clip(-5, 10)
+        r = clean_r(g["_r"]).dropna()
         w, l = r[r > 0], -r[r <= 0]
         out[s] = {"avg_win_r": float(w.mean()) if len(w) else 1.0, "avg_loss_r": float(l.mean()) if len(l) else 1.0,
                   "trades": int(len(g)), "win_rate": float((g["label"] == 1).mean())}
@@ -212,11 +222,73 @@ def selectivity(test: pd.DataFrame) -> dict:
                            "from": str(cut) if cut is not None else None, "passed": validated}}
 
 
+def _rank_corr(a: pd.Series, b: pd.Series) -> float | None:
+    """Spearman correlation (rank IC): does a higher prediction go with a better actual result?"""
+    m = a.notna() & b.notna()
+    if m.sum() < 20 or a[m].nunique() < 2 or b[m].nunique() < 2:
+        return None
+    return float(a[m].rank().corr(b[m].rank()))
+
+
+def prediction_accuracy(test: pd.DataFrame, min_p: float) -> dict:
+    """How good are the predictions on trades the models never trained on?
+
+    test: held-back rows with label, _r (actual R), p (win chance) and ev_r (profit model's expected R)."""
+    from sklearn.metrics import brier_score_loss, roc_auc_score
+    y, p = test["label"].astype(int), test["p"].astype(float)
+    n = int(len(test))
+    if n == 0:
+        return {}
+    base = float(y.mean())
+    out = {"trades": n}
+    # --- win/loss model
+    acc = float(((p >= 0.5).astype(int) == y).mean())
+    calls = p >= min_p
+    bins = [0, 0.3, 0.4, 0.5, 0.6, 0.7, 1.0001]
+    cal = []
+    for lo, hi in zip(bins[:-1], bins[1:]):
+        m = (p >= lo) & (p < hi)
+        if m.sum():
+            cal.append({"from": lo, "to": min(hi, 1.0), "trades": int(m.sum()), "predicted": round(float(p[m].mean()), 4),
+                        "actual": round(float(y[m].mean()), 4)})
+    out["win_loss"] = {
+        "accuracy": round(acc, 4),                                          # predicted win/loss matched the result
+        "always_majority": round(max(base, 1 - base), 4),                   # accuracy of always guessing the commoner outcome
+        "auc": round(float(roc_auc_score(y, p)), 4) if y.nunique() == 2 else None,
+        "brier": round(float(brier_score_loss(y, p)), 4),
+        "brier_base_rate": round(float(brier_score_loss(y, np.full(n, base))), 4),
+        "min_p": min_p, "calls": int(calls.sum()),
+        "precision": round(float(y[calls].mean()), 4) if calls.any() else None,  # of the calls it would take, how many won
+        "base_win_rate": round(base, 4), "calibration": cal,
+    }
+    # --- profit model
+    r = clean_r(test["_r"]) if "_r" in test else pd.Series(np.nan, index=test.index)
+    ev = test["ev_r"].astype(float) if "ev_r" in test else pd.Series(np.nan, index=test.index)
+    m = r.notna() & ev.notna()
+    if m.sum() >= 20:
+        rr, ee = r[m], ev[m]
+        q = pd.qcut(ee.rank(method="first"), 5, labels=False)
+        quint = [{"quintile": int(k) + 1, "trades": int((q == k).sum()), "predicted_r": round(float(ee[q == k].mean()), 3),
+                  "actual_r": round(float(rr[q == k].mean()), 3)} for k in range(5)]
+        pos = ee > 0
+        out["profit"] = {
+            "rank_ic": round(_rank_corr(ee, rr) or 0.0, 4),
+            "sign_accuracy": round(float(((ee > 0) == (rr > 0)).mean()), 4),   # predicted profit/loss direction matched
+            "mae_r": round(float((ee - rr).abs().mean()), 3),
+            "mae_r_baseline": round(float((rr - rr.median()).abs().mean()), 3),  # error of always predicting the median R
+            "avg_actual_r": round(float(rr.mean()), 3),
+            "predicted_positive": int(pos.sum()),
+            "actual_r_when_predicted_positive": round(float(rr[pos].mean()), 3) if pos.any() else None,
+            "quintiles": quint,
+        }
+    return out
+
+
 def train(ds: pd.DataFrame, weights: pd.Series | None = None) -> dict:
     """Fit the selector; return {"model": TrainedModel, "report": {...}} with honest out-of-sample comparisons."""
     from sklearn.metrics import roc_auc_score
 
-    from .models import TrainedModel, _base_model, purged_time_folds
+    from .models import TrainedModel, _base_model, _base_regressor, purged_time_folds
 
     ds = ds.sort_values("_ts").reset_index(drop=True)
     strategies = sorted(ds["_strategy"].unique())
@@ -225,16 +297,30 @@ def train(ds: pd.DataFrame, weights: pd.Series | None = None) -> dict:
     w = weights.reindex(ds.index).fillna(1.0).to_numpy() if weights is not None else None
     if y.nunique() < 2 or len(ds) < 200:
         raise ValueError(f"need at least 200 trades with wins and losses; have {len(ds)}")
+    r = clean_r(ds["_r"])
+    has_r = r.notna().to_numpy()
     oof = pd.Series(np.nan, index=ds.index)
+    oof_r = pd.Series(np.nan, index=ds.index)
     for tr, te in purged_time_folds(ts, 5):
         m = _base_model()
         m.fit(X.iloc[tr], y.iloc[tr], **({"sample_weight": w[tr]} if w is not None else {}))
         oof.iloc[te] = m.predict_proba(X.iloc[te])[:, 1]
+        tr_r = tr[has_r[tr]]
+        if len(tr_r) >= 100:
+            mr = _base_regressor()
+            mr.fit(X.iloc[tr_r], r.iloc[tr_r], **({"sample_weight": w[tr_r]} if w is not None else {}))
+            oof_r.iloc[te] = mr.predict(X.iloc[te])
     stats = strategy_r_stats(ds)
     mask = oof.notna()
-    ev_oof = pd.Series(np.nan, index=ds.index)
-    ev_oof[mask] = expected_value(oof[mask].to_numpy(), ds.loc[mask, "_strategy"], stats)
-    test = ds[mask].assign(p=oof[mask], ev=ev_oof[mask])
+    ev_wl = pd.Series(np.nan, index=ds.index)
+    ev_wl[mask] = expected_value(oof[mask].to_numpy(), ds.loc[mask, "_strategy"], stats)
+    # Which expected value ranks trades better? Decided on the EARLIER half of the held-back trades only.
+    held = ds[mask].sort_values("_ts")
+    early = held.index[: len(held) // 2]
+    ic_wl, ic_r = _rank_corr(ev_wl[early], r[early]), _rank_corr(oof_r[early], r[early])
+    ev_source = "regression" if ic_r is not None and oof_r[mask].notna().all() and ic_r >= (ic_wl if ic_wl is not None else -1) else "win_loss"
+    ev_oof = oof_r if ev_source == "regression" else ev_wl
+    test = ds[mask].assign(p=oof[mask], ev=ev_oof[mask], ev_r=oof_r[mask], ev_wl=ev_wl[mask])
     sel = selectivity(test)
     chosen = pick(test, min_p=sel["recommended_min_p"])
     by_strat = test.groupby("_strategy")["_net_pnl"].sum().sort_values(ascending=False)
@@ -251,20 +337,35 @@ def train(ds: pd.DataFrame, weights: pd.Series | None = None) -> dict:
         "strategy_stats": stats, "trained_from": str(ts.min()), "trained_to": str(ts.max()),
         "min_p": sel["recommended_min_p"], "selectivity": sel["table"], "validation": sel["validation"],
         "oos_days": int(pd.to_datetime(test["_ts"]).dt.normalize().nunique()),
+        "ev_source": ev_source,
+        "ev_rank_ic_early": {"win_loss": None if ic_wl is None else round(ic_wl, 4), "regression": None if ic_r is None else round(ic_r, 4)},
+        "accuracy": prediction_accuracy(test, sel["recommended_min_p"]),
     }
     from sklearn.calibration import CalibratedClassifierCV
     final = CalibratedClassifierCV(_base_model(), method="isotonic" if len(ds) > 2000 else "sigmoid", cv=3)
     final.fit(X, y, **({"sample_weight": w} if w is not None else {}))
-    model = TrainedModel(kind="selector", features=list(X.columns), model=final,
-                         metrics={k: v for k, v in report.items() if not isinstance(v, (dict, list))},
-                         meta={"strategies": strategies, "families": families, "stats": stats, "min_p": sel["recommended_min_p"]})
+    acc = report["accuracy"]
+    metrics = {k: v for k, v in report.items() if not isinstance(v, (dict, list))}
+    metrics.update({"oos_accuracy": (acc.get("win_loss") or {}).get("accuracy"),
+                    "oos_precision": (acc.get("win_loss") or {}).get("precision"),
+                    "oos_rank_ic": (acc.get("profit") or {}).get("rank_ic"),
+                    "oos_sign_accuracy": (acc.get("profit") or {}).get("sign_accuracy")})
+    model = TrainedModel(kind="selector", features=list(X.columns), model=final, metrics=metrics,
+                         meta={"strategies": strategies, "families": families, "stats": stats, "min_p": sel["recommended_min_p"],
+                               "ev_source": ev_source})
+    if has_r.sum() >= 100:
+        rm = _base_regressor()
+        rm.fit(X[has_r], r[has_r], **({"sample_weight": w[has_r]} if w is not None else {}))
+        model.r_model = rm
     all_avg = float(test["_net_pnl"].mean()) if len(test) else 0.0
     ai_avg = float(chosen["_net_pnl"].mean()) if len(chosen) else 0.0
     report["oos_all_avg_per_trade"], report["oos_ai_avg_per_trade"] = round(all_avg, 2), round(ai_avg, 2)
     report["oos_ai_t_stat"] = _stats(chosen, report["oos_days"])["t_stat"]
+    # skill of the model that ranks the trades: profit model's rank IC, or the win/loss model's AUC
+    ic = (report["accuracy"].get("profit") or {}).get("rank_ic")
+    skill = (ic is not None and ic >= 0.05) if ev_source == "regression" else bool(report["oos_auc"] and report["oos_auc"] > 0.53)
     # in use only if it beats taking every signal AND the threshold, chosen on earlier data, also held up on later data
-    report["beats_baseline"] = bool(report["oos_auc"] and report["oos_auc"] > 0.53 and report["oos_ai_pick_pnl"] > 0
-                                    and ai_avg > all_avg and sel["validation"]["passed"])
+    report["beats_baseline"] = bool(skill and report["oos_ai_pick_pnl"] > 0 and ai_avg > all_avg and sel["validation"]["passed"])
     return {"model": model, "report": report}
 
 
@@ -287,5 +388,11 @@ def score(model, rows: pd.DataFrame) -> pd.DataFrame:
     for f in model.features:
         if f not in X:
             X[f] = 0.0
-    p = model.model.predict_proba(X[model.features].astype(float))[:, 1]
-    return rows.assign(p=p, ev=expected_value(p, rows["_strategy"], meta["stats"]))
+    Xf = X[model.features].astype(float)
+    p = model.model.predict_proba(Xf)[:, 1]
+    rm = getattr(model, "r_model", None)            # models trained before the profit model have none
+    if rm is not None and meta.get("ev_source") == "regression":
+        ev = rm.predict(Xf)
+    else:
+        ev = expected_value(p, rows["_strategy"], meta["stats"])
+    return rows.assign(p=p, ev=ev)

@@ -1708,7 +1708,8 @@ function selectorHTML(s) {
   const verdict = champ || s.beats_baseline
     ? `On held-back data the AI's picks made <b class="${cls(ai)}">${inrS(ai, 2)}</b> per trade against <b class="${cls(all)}">${inrS(all, 2)}</b> for taking every signal, so it is <b class="green">used for live calls</b>.`
     : `On held-back data the AI's picks made <b class="${cls(ai)}">${inrS(ai, 2)}</b> per trade against <b class="${cls(all)}">${inrS(all, 2)}</b> for taking every signal${ai > all ? " — better, but " + (ai <= 0 ? "still losing money" : "not by enough") : " — no better"}. So it stays in <b class="amber">shadow</b>: it watches and keeps learning, but does not decide trades yet.`
-      + (s.oos_auc != null && s.oos_auc < 0.56 ? ` Its AUC of ${fmt(s.oos_auc, 3)} is close to 0.5 (a coin flip), so the market features don't yet separate winners from losers well.` : "");
+      + (s.ev_source === "regression" ? (((s.accuracy || {}).profit || {}).rank_ic ?? 0) < 0.05 ? ` Its profit predictions barely line up with what trades actually made (rank IC ${fmt(((s.accuracy || {}).profit || {}).rank_ic, 3)}; needs 0.05), so the market features don't yet separate good trades from bad ones.` : ""
+        : s.oos_auc != null && s.oos_auc < 0.56 ? ` Its AUC of ${fmt(s.oos_auc, 3)} is close to 0.5 (a coin flip), so the market features don't yet separate winners from losers well.` : "");
   const by = (s.oos_ai_pick_by_strategy || []).slice().sort((a, b) => b.count - a.count), mx = Math.max(1, ...by.map(x => x.count));
   const kp = (k, v, c = "", sub = "") => `<div class="stat"><div class="k">${k}</div><div class="v ${c}">${v}</div>${sub ? `<div class="s">${sub}</div>` : ""}</div>`;
   return `<div class="panel ai-card ${champ ? "champ" : "shadow"}"><div class="panel-h"><h2>AI strategy picker</h2>
@@ -1722,9 +1723,32 @@ function selectorHTML(s) {
       ${kp("Every signal", inrS(s.oos_all_strategies_pnl), cls(s.oos_all_strategies_pnl), `avg ${inrS(all, 2)} / trade`)}
       ${kp("Best single strategy", esc(lname(s.oos_best_single_strategy)), "", `${inrS(s.oos_best_single_pnl)} on the same data`)}
     </div>
+    ${accuracyHTML(s)}
     ${selectivityHTML(s)}
     ${by.length ? `<div class="ai-by"><div class="ts-h">What the AI picked (held-back data)</div>${by.map(x => `<div class="ai-row"><span class="ai-n" title="${esc(stratDesc(x._strategy))}">${esc(lname(x._strategy))}</span>
       <span class="ai-bar"><span style="width:${Math.round(x.count / mx * 100)}%"></span></span><span class="num xs">${x.count}</span><span class="num xs r ${cls(x.sum)}">${inrS(x.sum)}</span></div>`).join("")}</div>` : ""}</div>`;
+}
+function accuracyHTML(s) {
+  const a = s.accuracy || {}, w = a.win_loss, p = a.profit;
+  if (!w) return "";
+  const R = x => x == null ? "—" : (x >= 0 ? "+" : "−") + fmt(Math.abs(x), 2) + "R";
+  const kp = (k, v, c = "", sub = "") => `<div class="stat"><div class="k">${k}</div><div class="v ${c}">${v}</div>${sub ? `<div class="s">${sub}</div>` : ""}</div>`;
+  const better = (x, y) => x == null || y == null ? "" : x > y ? "green" : "red";
+  return `<div class="ai-sel"><div class="ts-h">Prediction accuracy <span class="t3 xs">on ${Number(a.trades || 0).toLocaleString("en-IN")} held-back trades the models never trained on. R = profit or loss divided by the amount risked.</span></div>
+    <div class="stat-grid">
+      ${kp("Win / loss right", pct1(w.accuracy), better(w.accuracy, w.always_majority), `always guessing “${w.base_win_rate >= 0.5 ? "win" : "loss"}”: ${pct1(w.always_majority)}`)}
+      ${kp(`Calls ≥ ${Math.round((w.min_p || 0) * 100)}% that won`, pct1(w.precision), better(w.precision, w.base_win_rate), `${Number(w.calls || 0).toLocaleString("en-IN")} calls · all trades won ${pct1(w.base_win_rate)}`)}
+      ${kp("Win chance AUC", fmt(w.auc, 3), "", "0.5 = coin flip")}
+      ${p ? kp("Profit model rank IC", fmt(p.rank_ic, 3), p.rank_ic >= 0.05 ? "green" : "", "0 = no skill · 0.05+ is useful") : ""}
+      ${p ? kp("Profit / loss direction right", pct1(p.sign_accuracy), "", `predicted profit on ${Number(p.predicted_positive || 0).toLocaleString("en-IN")}: they made ${R(p.actual_r_when_predicted_positive)} avg`) : ""}
+    </div>
+    ${p && p.quintiles ? `<div class="tscroll"><table class="tbl"><thead><tr><th>Trades ranked by predicted profit</th><th class="r">Trades</th><th class="r">Predicted</th><th class="r">Actual avg</th></tr></thead><tbody>
+      ${p.quintiles.slice().reverse().map(q => `<tr><td>${["worst", "2nd worst", "middle", "2nd best", "best"][q.quintile - 1]} fifth</td><td class="r">${q.trades}</td><td class="r">${R(q.predicted_r)}</td><td class="r ${cls(q.actual_r)}"><b>${R(q.actual_r)}</b></td></tr>`).join("")}
+    </tbody></table></div>` : ""}
+    ${w.calibration && w.calibration.length ? `<div class="tscroll"><table class="tbl"><thead><tr><th>Predicted win chance</th><th class="r">Trades</th><th class="r">Predicted avg</th><th class="r">Actually won</th></tr></thead><tbody>
+      ${w.calibration.map(c => `<tr><td>${Math.round(c.from * 100)}–${Math.round(c.to * 100)}%</td><td class="r">${c.trades}</td><td class="r">${pct1(c.predicted)}</td><td class="r"><b>${pct1(c.actual)}</b></td></tr>`).join("")}
+    </tbody></table></div>` : ""}
+    <p class="t3 xs">Expected profit per call comes from ${s.ev_source === "regression" ? "the <b>profit model</b> (it learns how much each call makes or loses after costs, per amount risked)" : "win chance × average win/loss of that strategy"}: it ranked the earlier held-back trades better. A useful model shows the best fifth clearly above the worst fifth in “Actual avg”.</p></div>`;
 }
 function selectivityHTML(s) {
   const t = s.selectivity || [];

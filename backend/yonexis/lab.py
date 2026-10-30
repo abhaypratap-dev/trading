@@ -228,6 +228,15 @@ def run(engine, progress, start: str = "2024-01-01", include_pairs: bool = True)
         progress(f"    AI picker: AUC {rep['oos_auc']} - out of sample: AI pick {rep['oos_ai_pick_trades']} trades "
                  f"Rs {rep['oos_ai_pick_pnl']:,.0f} (avg {rep['oos_ai_avg_per_trade']:,.0f}/trade) vs every signal "
                  f"Rs {rep['oos_all_strategies_pnl']:,.0f} (avg {rep['oos_all_avg_per_trade']:,.0f}/trade) -> {status}", {})
+        wl, pf = (rep.get("accuracy") or {}).get("win_loss") or {}, (rep.get("accuracy") or {}).get("profit") or {}
+        if wl:
+            progress(f"    prediction accuracy (held-back): win/loss {wl['accuracy']:.1%} (always guessing the commoner "
+                     f"outcome {wl['always_majority']:.1%}); calls it would take won "
+                     f"{'-' if wl['precision'] is None else format(wl['precision'], '.1%')} vs {wl['base_win_rate']:.1%} for all", {})
+        if pf:
+            progress(f"    profit model: rank IC {pf['rank_ic']:+.3f}, profit/loss direction right {pf['sign_accuracy']:.1%}, "
+                     f"best fifth avg {pf['quintiles'][-1]['actual_r']:+.2f}R vs worst fifth {pf['quintiles'][0]['actual_r']:+.2f}R; "
+                     f"expected value from {'profit model' if rep['ev_source'] == 'regression' else 'win chance x avg win/loss'}", {})
     else:
         progress(f"    only {len(ds)} candidate trades - need 200+ to train the AI picker", {})
 
