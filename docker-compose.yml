@@ -1,0 +1,107 @@
+# YONEXIS local stack:  docker compose up -d --build   ->  http://localhost:8000
+#
+# LLM: by default the agents talk to Ollama running natively on your Mac (Metal GPU, much faster
+# than Docker on Apple Silicon). To run Ollama inside Docker instead (CPU only on a Mac):
+#   docker compose --profile ollama-docker up -d   and set LLM_BASE_URL=http://ollama:11434/v1 in .env
+
+name: yonexis
+
+x-app: &app
+  build: { context: ., dockerfile: backend/Dockerfile }
+  image: yonexis-app:latest
+  env_file: .env
+  environment:
+    DATABASE_URL: postgresql+psycopg://yonexis:${POSTGRES_PASSWORD:-yonexis}@db:5432/yonexis
+    YONEXIS_DATA_DIR: /app/data
+    SANDBOX_QUEUE_DIR: /sandbox_queue
+    TZ: Asia/Kolkata
+  volumes:
+    - ./data:/app/data          # models, uploads, Upstox session, system-check reports (visible in the project folder)
+    - ./data/sandbox_queue:/sandbox_queue      # visible in the project folder (data/sandbox_queue) for diagnosis
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+  restart: unless-stopped
+
+services:
+  db:
+    image: timescale/timescaledb:latest-pg16
+    environment:
+      POSTGRES_USER: yonexis
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-yonexis}
+      POSTGRES_DB: yonexis
+      TZ: Asia/Kolkata
+    volumes: [pgdata:/var/lib/postgresql/data]
+    ports: ["127.0.0.1:${DB_HOST_PORT:-55432}:5432"]   # 55432 avoids clashing with a local Postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U yonexis"]
+      interval: 5s
+      retries: 20
+    restart: unless-stopped
+
+  api:
+    <<: *app
+    environment:
+      DATABASE_URL: postgresql+psycopg://yonexis:${POSTGRES_PASSWORD:-yonexis}@db:5432/yonexis
+      YONEXIS_DATA_DIR: /app/data
+      SANDBOX_QUEUE_DIR: /sandbox_queue
+      SANDBOX_MODE: queue
+      TZ: Asia/Kolkata
+    ports: ["127.0.0.1:8000:8000"]
+    depends_on:
+      db: { condition: service_healthy }
+      sandbox: { condition: service_started }
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8000/api/health"]
+      interval: 15s
+      retries: 10
+
+  # Runs uploaded and AI-written strategy code. No network at all.
+  sandbox:
+    <<: *app
+    command: ["python", "-m", "yonexis.sandbox.worker"]
+    network_mode: none
+    extra_hosts: []
+    environment:
+      YONEXIS_DATA_DIR: /tmp/yx
+      DATABASE_URL: sqlite:////tmp/yx/unused.db
+      SANDBOX_QUEUE_DIR: /sandbox_queue
+      TZ: Asia/Kolkata
+    volumes:
+      - ./data/sandbox_queue:/sandbox_queue      # visible in the project folder (data/sandbox_queue) for diagnosis
+    mem_limit: 12g          # backtests split the stocks across every CPU core Docker Desktop gives (Settings > Resources)
+    pids_limit: 256
+    read_only: true
+    tmpfs: [/tmp]
+
+  # Nightly retraining after market close (4:15 pm IST). New models start in shadow.
+  scheduler:
+    <<: *app
+    command: ["python", "-m", "yonexis.scheduler"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://yonexis:${POSTGRES_PASSWORD:-yonexis}@db:5432/yonexis
+      YONEXIS_DATA_DIR: /app/data
+      ENABLE_LIVE_LOOP: "false"
+      TZ: Asia/Kolkata
+    depends_on:
+      db: { condition: service_healthy }
+
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["ollama-docker"]
+    volumes: [ollama:/root/.ollama]
+    ports: ["127.0.0.1:11434:11434"]
+    restart: unless-stopped
+
+  ollama-pull:
+    image: ollama/ollama:latest
+    profiles: ["ollama-docker"]
+    depends_on: [ollama]
+    environment: { OLLAMA_HOST: "ollama:11434" }
+    entrypoint: ["sh", "-c", "sleep 5 && ollama pull ${LLM_MODEL:-qwen2.5-coder:7b}"]
+    restart: "no"
+
+volumes:
+  pgdata:
+  appdata:            # no longer used (data now lives in ./data); kept so old installs keep their volume
+  sandbox_queue:
+  ollama:

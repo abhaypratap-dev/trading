@@ -1,0 +1,510 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>YONEXIS NSE Pro</title>
+<link rel="stylesheet" href="/static/style.css">
+<script src="/static/lightweight-charts.js"></script><!-- lightweight-charts 4.2.3, Apache-2.0, TradingView -->
+<!-- TradingView attribution: charts by TradingView Lightweight Charts, https://www.tradingview.com/ -->
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="top">
+  <div class="top-row">
+    <div class="brand">YONEXIS <span>NSE PRO</span></div>
+    <div class="health" id="health">
+      <a class="chip chip-lock" id="hc-lock" href="#wallet" data-go="wallet" title="Paper trading only: no order can reach a broker. Open Paper Wallet.">
+        <svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 7V5a3.5 3.5 0 0 1 7 0v2h.5a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1zm1.5 0h4V5a2 2 0 0 0-4 0z" fill="currentColor"/></svg>
+        <b>PAPER</b><span class="lock-x"> · real orders LOCKED</span></a>
+      <span class="chip chip-num hide-sm" title="Demo wallet equity"><span class="chip-k">Equity</span><b id="hc-eq">—</b></span>
+      <span class="chip chip-num" title="Today's realised P&amp;L plus open mark-to-market"><span class="chip-k">Day P&amp;L</span><b id="hc-pnl">—</b></span>
+      <button type="button" class="chip hide-sm" id="hc-feed" data-go="data" title="Live feed — open Data"><span class="dot" id="hc-feed-dot"></span><span id="hc-feed-t">connecting…</span></button>
+      <button type="button" class="chip hide-sm" id="hc-ai" data-go="risk" title="AI model — open System"><span class="dot" id="hc-ai-dot"></span><span id="hc-ai-t">AI</span></button>
+      <span class="chip mono hide-md" id="hc-clock" title="India Standard Time">--:--:-- IST</span>
+      <button type="button" class="chip bell" id="ev-bell" aria-label="Today's events" aria-haspopup="dialog" aria-expanded="false">
+        <svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5a4.5 4.5 0 0 0-4.5 4.5v2.6L2.2 11a.6.6 0 0 0 .5.9h10.6a.6.6 0 0 0 .5-.9l-1.3-2.4V6A4.5 4.5 0 0 0 8 1.5zM6.2 13a1.8 1.8 0 0 0 3.6 0z" fill="currentColor"/></svg>
+        <span class="badge" id="ev-count" hidden>0</span></button>
+    </div>
+  </div>
+  <nav id="tabs" aria-label="Sections">
+    <button type="button" data-tab="live" class="on" aria-current="page">Live</button>
+    <button type="button" data-tab="wallet">Paper Wallet</button>
+    <span class="nav-sep" aria-hidden="true"></span>
+    <button type="button" data-tab="backtest">Backtest</button>
+    <button type="button" data-tab="models">Strategies</button>
+    <button type="button" data-tab="builder">AI Builder</button>
+    <button type="button" data-tab="import">Import</button>
+    <button type="button" data-tab="feedback">Feedback</button>
+    <span class="nav-sep" aria-hidden="true"></span>
+    <button type="button" data-tab="data">Data</button>
+    <button type="button" data-tab="risk">System</button>
+    <button type="button" class="nav-help" id="kbd-open" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">?</button>
+  </nav>
+</header>
+<div id="toasts" role="status" aria-live="polite"></div>
+
+<main id="main">
+<!-- ============================== LIVE ============================== -->
+<section id="tab-live" class="tab on" aria-label="Live">
+  <div class="live-grid">
+    <div class="panel chart-panel">
+      <div class="quote-bar">
+        <div class="q-id"><div class="qs" id="c-sym">—</div><div class="t3 xs" id="c-day"></div></div>
+        <div class="q-px"><div class="qp num" id="c-price">—</div><div class="xs num" id="c-chg"></div></div>
+        <div class="qk"><span class="t3 xs">Zone</span><b class="cyan num" id="c-zone">—</b></div>
+        <div class="qk"><span class="t3 xs">Status</span><b id="c-status">—</b></div>
+        <div class="qk"><span class="t3 xs">Last call today</span><b id="c-signal">—</b></div>
+      </div>
+      <div class="chart-bar" id="chart-bar">
+        <button type="button" id="ch-live" class="sm on-live">&#9679; Live</button>
+        <span class="sep"></span>
+        <span class="tf-chips seg" id="tf-chips" role="group" aria-label="Candle interval"></span>
+        <select id="ch-int" class="sm" aria-label="Candle interval"><option>1m</option><option>3m</option><option selected>5m</option><option>15m</option><option>30m</option><option>1h</option><option>1d</option></select>
+        <button type="button" class="sm range-t" id="ch-range-t" aria-expanded="false" aria-controls="ch-range">Range</button>
+        <span class="ch-range" id="ch-range">
+          <input id="ch-start" type="date" class="sm" aria-label="From date"> <span class="t3">→</span> <input id="ch-end" type="date" class="sm" aria-label="To date">
+          <button type="button" id="ch-go" class="sm primary">Show</button>
+          <button type="button" class="sm" data-days="1">Prev day</button><button type="button" class="sm" data-days="5">5D</button><button type="button" class="sm" data-days="30">1M</button>
+        </span>
+        <span class="ind-wrap">
+          <button type="button" class="sm ind-btn" id="ind-btn" aria-haspopup="dialog" aria-expanded="false" aria-controls="ind-pop"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 12.5l3.5-4 3 2.5 5.5-7 1 .8-6.3 8.1-3-2.5-2.7 3.1z" fill="currentColor"/></svg>Indicators <span class="cnt" id="ind-n">0</span></button>
+          <div class="ind-pop" id="ind-pop" hidden role="dialog" aria-label="Chart indicators">
+            <div class="sheet-h"><b>Indicators</b><button type="button" class="x" id="ind-x" aria-label="Close">×</button></div>
+            <label class="chk ind-auto"><input type="checkbox" id="ind-auto"> Auto (strategy)</label>
+            <select id="ind-strat" class="sm" aria-label="Strategy whose indicators to show"></select>
+            <p class="t3 xs" id="ind-auto-note"></p>
+            <div class="ind-grid" id="ind-list"></div>
+          </div>
+        </span>
+        <span id="ch-src" class="t3 xs ch-src"></span>
+      </div>
+      <div id="live-banner" class="q" hidden></div>
+      <div class="ind-legend" id="ind-legend" aria-label="Indicators on the chart"></div>
+      <div id="chart"></div>
+      <div id="osc" hidden aria-label="Oscillators"></div>
+    </div>
+    <div class="panel watch-panel">
+      <div class="panel-h"><h2>Watchlist</h2><span class="ph-meta"><span id="clock" class="mono t2 xs" title="Time of the last tick"></span> <span id="cnd-note" class="t3 xs"></span></span></div>
+      <div class="add-box"><input id="wl-add" placeholder="+ Add stock or future (RELIANCE, NIFTY-FUT)" autocomplete="off" aria-label="Add a symbol to the watchlist"><div id="wl-sugg" class="sugg" hidden></div></div>
+      <div class="watch-tools">
+        <input id="w-search" placeholder="Filter  ( / )" aria-label="Filter watchlist">
+        <select id="w-seg" aria-label="Segment"><option value="">All</option><option value="eq">Stocks</option><option value="fut">Futures</option></select>
+        <select id="w-sort" aria-label="Sort"><option value="list">List order</option><option value="chg">% change</option><option value="sig">Signal first</option><option value="name">A–Z</option></select>
+        <button type="button" class="sm" id="wl-fut" title="Add NIFTY / BANKNIFTY / FINNIFTY / MIDCPNIFTY futures and the futures of every stock in this list">+ Futures</button>
+      </div>
+      <div class="scroll"><table class="tbl" id="watch"><thead><tr><th>Symbol</th><th class="r">LTP</th><th class="r">Chg</th><th>Zone</th><th>Signal</th><th><span class="sr">Remove</span></th></tr></thead><tbody></tbody></table></div>
+      <div class="t3 xs wl-note" id="wl-note"></div>
+    </div>
+  </div>
+
+  <div class="panel dock">
+    <div class="today-strip" id="today-strip" aria-label="Today so far"></div>
+    <div class="dock-h">
+      <div class="dock-tabs" role="tablist" aria-label="Live details">
+        <button type="button" role="tab" id="dt-pos" data-dock="pos" aria-selected="true">Positions <span class="cnt" id="dock-npos">0</span></button>
+        <button type="button" role="tab" id="dt-calls" data-dock="calls" aria-selected="false">Calls <span class="cnt" id="dock-ncalls">0</span></button>
+        <button type="button" role="tab" id="dt-flow" data-dock="flow" aria-selected="false">Order flow</button>
+        <button type="button" role="tab" id="dt-news" data-dock="news" aria-selected="false">News <span class="cnt" id="dock-nnews">0</span></button>
+      </div>
+      <span class="t3 xs" id="dock-note"></span>
+    </div>
+    <div class="dock-body" id="dock-pos" role="tabpanel" aria-labelledby="dt-pos">
+      <div class="tscroll"><table class="tbl pos-tbl" id="lv-pos"><thead><tr><th>Symbol</th><th>Side</th><th class="r">Qty</th><th class="r">Entry</th><th class="r">LTP</th><th class="r">SL</th><th class="r">Target</th><th class="r">MTM</th><th>Opened</th><th></th></tr></thead><tbody></tbody></table></div>
+      <div class="pos-cards" id="lv-pos-cards"></div>
+    </div>
+    <div class="dock-body" id="dock-calls" role="tabpanel" aria-labelledby="dt-calls" hidden>
+      <div class="calls-top">
+        <span class="seg" id="calls-filter" role="group" aria-label="Review filter"><button type="button" class="sm on" data-f="all" aria-pressed="true">All</button><button type="button" class="sm" data-f="review" aria-pressed="false">Needs review</button><button type="button" class="sm" data-f="reviewed" aria-pressed="false">Reviewed</button></span>
+        <button type="button" class="sm filt-t" id="cf-toggle" aria-expanded="false" aria-controls="cf">Filters</button>
+        <span class="t3 xs" id="cf-count"></span>
+        <span class="t3 xs grow">Review each call — your verdict trains the model.</span>
+      </div>
+      <div class="filter-bar" id="cf">
+        <select id="cf-range" aria-label="Period"><option value="today">Today</option><option value="yday">Yesterday</option><option value="7">Last 7 days</option><option value="30">Last 30 days</option><option value="all">All time</option><option value="custom">Pick dates…</option></select>
+        <input id="cf-from" type="date" hidden aria-label="From"><input id="cf-to" type="date" hidden aria-label="To">
+        <input id="cf-sym" placeholder="Symbol" size="10" aria-label="Symbol">
+        <select id="cf-side" aria-label="Side"><option value="">Buy + Sell</option><option>BUY</option><option>SELL</option></select>
+        <select id="cf-status" aria-label="Status"><option value="">Any status</option><option value="taken">Traded (paper)</option><option value="closed">Closed</option><option value="blocked">Blocked</option><option value="not traded">Not traded</option><option value="void">Void</option></select>
+        <select id="cf-out" aria-label="Outcome"><option value="">Any outcome</option><option value="win">Profit</option><option value="loss">Loss</option><option value="open">Still open</option></select>
+        <select id="cf-strat" aria-label="Strategy"><option value="">All strategies</option></select>
+        <span id="cf-reason" class="fchip" hidden></span>
+        <button type="button" class="sm" id="cf-clear">Clear</button>
+      </div>
+      <div class="scroll calls-scroll tscroll"><table class="tbl" id="calls"><thead><tr><th>Time</th><th>Symbol</th><th>Side</th><th class="r">Price</th><th class="r">SL</th><th class="r">Target</th><th class="r">Score</th><th>Status</th><th>Outcome</th><th>Your call</th></tr></thead><tbody></tbody></table></div>
+    </div>
+    <div class="dock-body" id="dock-flow" role="tabpanel" aria-labelledby="dt-flow" hidden>
+      <div class="of-empty q" id="of-empty" hidden>Order flow streams from the Upstox full feed during market hours (09:15–15:30); minutes are stored for the AI.</div>
+      <div class="of-grid">
+        <div class="of-book"><div class="of-h">Market depth <span class="t3 xs" id="of-book-ts"></span></div><div class="of-ladder" id="of-ladder"></div></div>
+        <div class="of-stats" id="of-stats"></div>
+        <div class="of-chart-w"><div class="of-h">Cumulative delta per minute <span class="t3 xs">· bars: buy / sell volume</span></div><div id="of-chart"></div></div>
+      </div>
+    </div>
+    <div class="dock-body" id="dock-news" role="tabpanel" aria-labelledby="dt-news" hidden>
+      <div class="calls-top"><button type="button" class="sm" id="nw-refresh">Refresh news</button><span class="t3 xs" id="nw-meta"></span><span class="grow"></span><span class="t3 xs" id="nw-err"></span></div>
+      <ol class="nw-list" id="nw-list"></ol>
+    </div>
+  </div>
+</section>
+
+<!-- ============================== WALLET ============================== -->
+<section id="tab-wallet" class="tab" aria-label="Paper Wallet">
+  <div class="lock-strip" id="w-lock">Paper trading only — real orders are LOCKED.</div>
+  <div class="kpis" id="w-cards"></div>
+  <div class="panel"><div class="panel-h"><h2>Open paper positions</h2><span class="t3 xs" id="w-note"></span></div>
+    <div class="tscroll"><table class="tbl pos-tbl" id="w-open"><thead><tr><th>#</th><th>Opened</th><th>Symbol</th><th>Side</th><th class="r">Qty</th><th class="r">Entry</th><th class="r">LTP</th><th class="r">SL</th><th class="r">Target</th><th class="r">MTM</th><th>Strategy</th><th></th></tr></thead><tbody></tbody></table></div>
+    <div class="pos-cards" id="w-open-cards"></div></div>
+  <div class="panel"><div class="panel-h"><h2>Closed paper trades</h2></div>
+    <div class="totals" id="w-closed-tot"></div>
+    <div class="tscroll tall"><table class="tbl" id="w-closed"><thead><tr><th>#</th><th>Entry</th><th>Exit</th><th>Symbol</th><th>Side</th><th class="r">Qty</th><th class="r">Entry</th><th class="r">Exit</th><th>Why</th><th class="r">Gross</th><th class="r">Costs</th><th class="r">Net</th></tr></thead><tbody></tbody></table></div></div>
+
+  <details class="panel card-d" id="ts-details" open>
+    <summary><span class="sum-t">Live test for a day</span><span class="t3 xs" id="ts-sumline"></span></summary>
+    <p class="panel-sub">Pick a trading day, the instruments and the logic, then rebuild. That day's real market is replayed with that logic only: the <b>zone comes from Upstox's 5-minute candles</b>, and the <b>buy/sell entries, stops, targets and 15:15 exits are caught on 1-minute candles</b>. For today, running trades stay open and the live engine keeps trading exactly this selection; a past date only rewrites that day.</p>
+    <div class="row" style="margin-bottom:8px"><label class="chk">Date <input type="date" id="ts-date"></label><button type="button" class="sm" id="ts-today">Today</button><button type="button" class="sm" id="ts-prev">Previous trading day</button><span id="ts-date-note" class="t3 xs"></span></div>
+    <div class="ts-grid">
+      <div><div class="ts-h">1. Instruments</div>
+        <div class="row tight"><label class="chk"><input type="checkbox" id="ts-seg-eq" checked> Stocks <span class="t3 xs" id="ts-n-eq"></span></label>
+          <label class="chk"><input type="checkbox" id="ts-seg-fut" checked> Futures <span class="t3 xs" id="ts-n-fut"></span></label>
+          <label class="chk xs" title="All NSE futures (stock + index). Picked ones join the watchlist when you rebuild."><input type="checkbox" id="ts-allfut"> all NSE futures</label>
+          <input id="ts-filter" class="sm" placeholder="Filter…" style="max-width:140px" aria-label="Filter instruments"><button type="button" class="sm" id="ts-all">Select all</button><button type="button" class="sm" id="ts-none">None</button></div>
+        <div class="ts-list" id="ts-list"></div></div>
+      <div><div class="ts-h">2. Logic</div>
+        <div class="lp" id="ts-logic" role="radiogroup" aria-label="Logic"></div>
+        <div class="ts-h" style="margin-top:12px">3. Strategy version</div>
+        <select id="ts-version" aria-label="Strategy version"></select>
+        <p class="t3 xs" id="ts-desc"></p></div>
+    </div>
+    <div class="row"><button type="button" id="td-go" class="primary">Rebuild trades for today</button><span id="ts-summary" class="t3 xs"></span><span id="td-msg" class="t2"></span></div>
+    <div class="td-extra" id="td-extra" hidden></div>
+    <div class="progress" id="td-bar" hidden><div style="width:0%"></div></div>
+    <div class="tscroll"><table class="tbl" id="td-out" hidden><thead><tr><th>Symbol</th><th>Side</th><th>Entry</th><th class="r">Entry price</th><th>Result</th><th>Exit</th><th class="r">Exit / LTP</th><th class="r">P&amp;L</th><th><span class="sr">Chart</span></th></tr></thead><tbody></tbody></table></div>
+    <p class="t3 xs">Keeps only the selected instruments and logic: all other paper trades and calls of the chosen day are removed. Other days are not touched (use "Clear trade history" in the Danger zone for that). Nothing is sent to Upstox.</p>
+  </details>
+
+  <div class="panel"><div class="panel-h"><h2>Demo money &amp; margins</h2></div>
+    <div class="form"><label>Amount (Rs) <input id="w-amt" type="number" value="1000000" step="10000"></label>
+      <label title="Money blocked for a stock trade = trade value / leverage. Indian brokers give up to 5x for intraday (MIS).">Stock intraday leverage (x) <input id="w-lev" type="number" min="1" max="10" step="0.5"></label>
+      <label title="Money blocked for a futures trade, as % of the contract value (exchange SPAN + exposure is usually 12-20%).">Futures margin (%) <input id="w-futm" type="number" min="1" max="100" step="1"></label></div>
+    <div class="row"><button type="button" id="w-deposit">Add demo money</button><button type="button" id="w-margin">Save margin settings</button><span id="w-margin-msg" class="t3 xs"></span></div>
+    <p class="t3 xs">Leverage: money blocked for a stock trade = value ÷ leverage. Futures margin: % of contract value blocked. Every change is kept in the ledger.</p></div>
+
+  <details class="panel danger-zone" id="w-danger">
+    <summary><span class="sum-t">Danger zone</span><span class="t3 xs">reset wallet · clear trade history</span></summary>
+    <div class="dz-row"><div><b>Reset wallet</b><p class="t3 xs">Sets the cash balance to the Amount above. Needs all paper positions closed. Trade history is kept.</p></div>
+      <button type="button" id="w-reset" class="danger">Reset wallet to amount</button></div>
+    <div class="dz-row"><div><b>Clear trade history</b><p class="t3 xs">Deletes every paper trade (open ones too) and the ledger, and restarts the wallet at the Amount above.</p>
+      <label class="chk xs"><input type="checkbox" id="w-clear-calls"> also delete calls &amp; feedback</label></div>
+      <button type="button" id="w-clear" class="danger">Clear trade history</button></div>
+  </details>
+
+  <div class="panel"><div class="panel-h"><h2>Ledger</h2></div><div class="tscroll tall"><table class="tbl" id="w-ledger"><thead><tr><th>Time</th><th>Kind</th><th class="r">Amount</th><th class="r">Balance</th><th>Note</th></tr></thead><tbody></tbody></table></div></div>
+</section>
+
+<!-- ============================== BACKTEST ============================== -->
+<section id="tab-backtest" class="tab" aria-label="Backtest">
+  <div class="panel" id="lab-panel">
+    <div class="panel-h"><h2>Strategy Lab</h2><span class="t3 xs" id="lab-when"></span></div>
+    <p class="panel-sub">Backtests every strategy in the library on all stored history, ranks them, finds the best one per stock and trains the AI picker that chooses which strategy to trust in which situation.</p>
+    <div class="row tight lab-form">
+      <label class="chk">From <input type="date" id="lab-start" value="2024-01-01"></label>
+      <label class="chk"><input type="checkbox" id="lab-pairs" checked> include pair trading</label>
+      <button type="button" class="primary" id="lab-go">Run Strategy Lab</button>
+      <span class="t3 xs" id="lab-meta" hidden></span>
+    </div>
+    <pre class="log" id="lab-log" hidden style="max-height:240px;overflow:auto"></pre>
+    <details class="lab-how" id="lab-how">
+      <summary>How the AI picker works</summary>
+      <ol>
+        <li><b>Backtest everything.</b> Every strategy is run on all stored history for every stock, with costs and slippage.</li>
+        <li><b>Describe each moment.</b> For every signal it records what the market looked like at decision time: time of day, opening gap, trend strength, distance from VWAP, volume, volatility and how the index was moving.</li>
+        <li><b>Learn who wins when.</b> A model learns which strategy tends to win in which situation. Your own losing paper trades are added too and count three times, so it learns from your real mistakes.</li>
+        <li><b>Test on unseen data.</b> The last part of history is held back. The model picks trades there, and its result is compared with simply taking every signal.</li>
+        <li><b>Used only if it is better.</b> It becomes <span class="green">champion (in use)</span> only when it beats taking every signal; otherwise it stays in <span class="amber">shadow</span> and just watches. It retrains every night.</li>
+      </ol>
+    </details>
+  </div>
+  <div id="lab-out"></div>
+  <div class="panel">
+    <div class="panel-h"><h2>Backtest a strategy</h2>
+      <span class="seg" id="bt-mode" role="radiogroup" aria-label="Mode">
+        <label class="seg-r"><input type="radio" name="bt-mode" value="quick" checked> Quick</label>
+        <label class="seg-r"><input type="radio" name="bt-mode" value="full"> Full evaluation</label>
+      </span></div>
+    <p class="panel-sub" id="bt-mode-help">Quick: one pass over the period with the strategy's settings — results in seconds.</p>
+    <div class="form">
+      <label>Strategy <select id="bt-strategy"></select></label>
+      <label class="w-wide">Symbols <input id="bt-symbols" value="RELIANCE,HDFCBANK,INFY"></label>
+      <label>Interval <select id="bt-interval"><option>1m</option><option>3m</option><option selected>5m</option><option>10m</option><option>15m</option><option>30m</option><option>60m</option></select></label>
+      <label>From <input id="bt-start" type="date" value="2024-01-01"></label>
+      <label>To <input id="bt-end" type="date" value="2025-06-30"></label>
+      <label>Data <select id="bt-source"><option value="db">Stored data</option><option value="simulated">Simulated (test only)</option></select></label>
+    </div>
+    <div class="form form-help">
+      <label class="w-wide">Params (JSON) <input id="bt-params" value="{}" class="mono">
+        <span class="help">Overrides the strategy's settings for this run only. <code>{}</code> = saved settings. e.g. <code>{"rr": 2.5, "entry_mode": "close"}</code> = target 2.5× risk, enter on candle close.</span></label>
+      <label class="w-wide full-only">Param grid for walk-forward (JSON) <input id="bt-space" value='{"rr":[1.5,2,2.5]}' class="mono">
+        <span class="help">Values tried in each training window; the best is tested on the next unseen window. <code>{"rr":[1.5,2,2.5]}</code> = 3 variants. More variants = stricter deflated-Sharpe check and a longer run.</span></label>
+      <label class="full-only">Baseline net P&amp;L (Rs) <input id="bt-baseline" type="number" placeholder="optional">
+        <span class="help">Your best known result. Adds the check "beats baseline on the hold-out" (last 20% of data). Empty = no check.</span></label>
+    </div>
+    <div class="row"><button type="button" id="bt-quick" class="primary">Run quick backtest</button><button type="button" id="bt-full" class="primary" hidden>Run full evaluation</button></div>
+  </div>
+  <div id="bt-out"></div>
+</section>
+
+<!-- ============================== AI BUILDER ============================== -->
+<section id="tab-builder" class="tab" aria-label="AI Builder">
+  <div class="panel">
+    <div class="panel-h"><h2>1 · Explain your idea</h2></div>
+    <p class="panel-sub">Describe entries, filters, stop and target in plain words. The spec agent turns it into a rule card you can check.</p>
+    <textarea id="ai-prompt" rows="5" placeholder="e.g. Buy when price closes above the first red candle zone, only if Nifty is green and volume is 1.5x the 20-candle average. SL at zone low, target 2x risk. No trades after 2:30 pm."></textarea>
+    <div class="row"><button type="button" id="ai-spec" class="primary">Create rule card</button><span id="ai-spec-status" class="t2"></span></div>
+  </div>
+  <div class="panel" id="ai-card-panel" hidden>
+    <div class="panel-h"><h2>2 · Check and edit the rule card</h2></div>
+    <div id="ai-questions"></div>
+    <textarea id="ai-card" rows="16" class="mono" aria-label="Rule card JSON"></textarea>
+    <div class="form">
+      <label class="w-wide">Test symbols <input id="ai-symbols" value="RELIANCE,HDFCBANK,INFY"></label>
+      <label>From <input id="ai-start" type="date" value="2024-01-01"></label>
+      <label>To <input id="ai-end" type="date" value="2025-06-30"></label>
+      <label>Data <select id="ai-source"><option value="db">Stored data</option><option value="simulated">Simulated (test only)</option></select></label>
+      <label>Baseline net P&amp;L <input id="ai-baseline" type="number"></label>
+    </div>
+    <div class="row"><button type="button" id="ai-build" class="primary">Confirm &amp; build with agents</button></div>
+  </div>
+  <div class="panel" id="ai-progress" hidden><div class="panel-h"><h2>3 · Agents at work</h2></div><div id="ai-log" class="log"></div></div>
+  <div id="ai-out"></div>
+</section>
+
+<!-- ============================== IMPORT ============================== -->
+<section id="tab-import" class="tab" aria-label="Import">
+  <div class="panel">
+    <div class="panel-h"><h2>Convert an existing script</h2></div>
+    <p class="panel-sub">Pine Script, AFL, Python or Excel rules — the converter agent rewrites it as a YONEXIS strategy and a reviewer checks it.</p>
+    <div class="form"><label>Language <select id="imp-lang"><option>auto</option><option>pine</option><option>afl</option><option>python</option><option>excel-rules</option></select></label>
+      <label>Name <input id="imp-name" placeholder="optional"></label>
+      <label class="w-wide">Notes <input id="imp-notes" placeholder="e.g. entries on candle close"></label></div>
+    <textarea id="imp-src" rows="12" class="mono" placeholder="Paste the admin's script here" aria-label="Script source"></textarea>
+    <div class="row"><button type="button" id="imp-convert" class="primary">Convert with agents</button><span id="imp-status" class="t2"></span></div>
+    <div id="imp-out"></div>
+  </div>
+  <div class="panel">
+    <div class="panel-h"><h2>Parity check</h2></div>
+    <p class="panel-sub">Compare a converted strategy with the admin's own backtest trades, trade by trade.</p>
+    <div class="form">
+      <label>Strategy <select id="par-strategy"></select></label>
+      <label>Interval <input id="par-interval" value="5m" size="4"></label>
+      <label>Params (JSON) <input id="par-params" value="{}" class="mono"></label>
+      <label>Trades file <input id="par-file" type="file"></label>
+    </div>
+    <div class="row"><button type="button" id="par-run" class="primary">Run parity check</button></div>
+    <div id="par-out"></div>
+  </div>
+</section>
+
+<!-- ============================== DATA ============================== -->
+<section id="tab-data" class="tab" aria-label="Data">
+  <div class="panel" id="ux-panel">
+    <div class="panel-h"><h2>Upstox</h2><span id="ux-badge" class="t3">checking…</span></div>
+    <p class="panel-sub">Live NSE feed, candles and (locked) orders. Logins expire daily at 3:30 AM.</p>
+    <div id="ux-info" class="t2"></div>
+    <div class="row">
+      <button type="button" id="ux-login" class="primary">Connect Upstox (daily login)</button>
+      <button type="button" id="ux-logout">Disconnect</button>
+      <span class="t3 xs">or paste a token from Upstox Developer Apps:</span>
+      <input id="ux-token" placeholder="access token" size="28" aria-label="Upstox access token"><button type="button" id="ux-token-go">Use token</button>
+    </div>
+  </div>
+  <div class="panel" id="dh-panel"><div class="panel-h"><h2>Download real history for the whole watchlist</h2></div>
+    <p class="panel-sub">Needed for real backtests and for training the AI score model. 5m data back to 2024 for 20 stocks takes about 2–4 minutes (Upstox serves one month per request).</p>
+    <div class="form"><label>From <input id="dh-start" type="date" value="2024-01-01"></label><label>Interval <select id="dh-int"><option>5m</option><option>1m</option><option>15m</option><option>1d</option></select></label></div>
+    <div class="row"><button type="button" id="dh-go" class="primary">Download</button><span id="dh-msg" class="t2"></span></div>
+    <div class="progress" id="dh-bar" hidden><div style="width:0%"></div></div></div>
+  <div class="panel"><div class="panel-h"><h2>Stored data</h2></div><div class="tscroll tall"><table class="tbl" id="inv"><thead><tr><th>Symbol</th><th>Interval</th><th class="r">Candles</th><th>From</th><th>To</th><th>Source</th></tr></thead><tbody></tbody></table></div></div>
+  <div class="grid2">
+  <div class="panel">
+    <div class="panel-h"><h2>Fetch from a connector</h2></div>
+    <p class="panel-sub">Upstox: 1–15 minute candles back to Jan 2022 (fetched a month at a time). Yahoo keeps 5m data for ~60 days only.</p>
+    <div class="form">
+      <label>Source <select id="df-source"><option value="upstox">Upstox</option><option value="yahoo">Yahoo Finance</option><option value="kite">Zerodha Kite</option><option value="simulated">Simulated</option></select></label>
+      <label class="w-wide">Symbols <input id="df-symbols" value="RELIANCE,HDFCBANK,INFY"></label>
+      <label>Interval <input id="df-interval" value="5m" size="4"></label>
+      <label>From <input id="df-start" type="date"></label>
+      <label>To <input id="df-end" type="date"></label>
+    </div>
+    <div class="row"><button type="button" id="df-go" class="primary">Fetch and store</button></div>
+    <pre id="df-out" class="log"></pre>
+  </div>
+  <div class="panel">
+    <div class="panel-h"><h2>Upload Excel / CSV / JSON / Parquet</h2></div>
+    <div class="form">
+      <label>File <input id="up-file" type="file"></label>
+      <label>Kind <select id="up-kind"><option value="candles">Candles (OHLCV)</option><option value="trades">Backtest trades</option></select></label>
+      <label>Symbol (if not in file) <input id="up-symbol"></label>
+      <label>Interval (blank = detect) <input id="up-interval" size="4"></label>
+      <label class="w-wide">Column mapping (JSON) <input id="up-mapping" value="{}" class="mono"></label>
+    </div>
+    <div class="row"><button type="button" id="up-preview">Preview</button><button type="button" id="up-go" class="primary">Validate and store</button></div>
+    <pre id="up-out" class="log"></pre>
+  </div>
+  </div>
+</section>
+
+<!-- ============================== MODELS ============================== -->
+<section id="tab-models" class="tab" aria-label="Strategies">
+  <div class="panel"><div class="panel-h"><h2>Paper vs backtest</h2></div>
+    <p class="panel-sub">Phase 4 gate: live paper results must stay inside the backtest's expected band.</p>
+    <div class="tscroll"><table class="tbl" id="perf"><thead><tr><th>Strategy</th><th>Status</th><th class="r">Paper trades</th><th class="r">Sessions</th><th class="r">Paper net</th><th class="r">Win % paper / test</th><th class="r">Avg ret % paper / test</th><th>Verdict</th><th>Note</th></tr></thead><tbody></tbody></table></div></div>
+  <div class="panel"><div class="panel-h"><h2>Strategies</h2></div>
+    <p class="panel-sub">Promotion path: candidate → approved → paper → live small → live. Only strategies in paper status make live calls.</p>
+    <div class="tscroll"><table class="tbl" id="strats"><thead><tr><th>Name</th><th class="r">v</th><th>Origin</th><th>Created</th><th>Status</th><th></th></tr></thead><tbody></tbody></table></div></div>
+  <div class="panel"><div class="panel-h"><h2>Train the meta-label model</h2></div>
+    <p class="panel-sub">Learns which of a strategy's signals tend to work, to score live calls.</p>
+    <div class="form">
+      <label>Strategy <select id="tm-strategy"></select></label>
+      <label class="w-wide">Symbols <input id="tm-symbols" value="RELIANCE,HDFCBANK,INFY"></label>
+      <label>From <input id="tm-start" type="date" value="2024-01-01"></label>
+      <label>To <input id="tm-end" type="date" value="2025-06-30"></label>
+      <label>Data <select id="tm-source"><option value="db">Stored data</option><option value="simulated">Simulated (test only)</option></select></label>
+    </div>
+    <div class="row"><button type="button" id="tm-go" class="primary">Train meta model</button><button type="button" id="ti-go">Train admin-imitation model from feedback</button><span id="tm-status" class="t2"></span></div>
+  </div>
+  <div class="panel"><div class="panel-h"><h2>Models</h2></div>
+    <p class="panel-sub">New models start in shadow; promote to champion to use them live.</p>
+    <div class="tscroll"><table class="tbl" id="models"><thead><tr><th>Kind</th><th>Version</th><th>Strategy</th><th class="r">OOS AUC</th><th class="r">Hit rate top 40% / all</th><th>Status</th><th></th></tr></thead><tbody></tbody></table></div></div>
+  <div class="panel"><div class="panel-h"><h2>Backtest history</h2></div>
+    <div class="tscroll tall"><table class="tbl" id="bts"><thead><tr><th class="r">#</th><th>Kind</th><th>Strategy</th><th>Verdict</th><th class="r">Trades</th><th class="r">Net P&amp;L</th><th class="r">Win %</th><th class="r">PF</th><th class="r">Sharpe</th><th></th></tr></thead><tbody></tbody></table></div></div>
+</section>
+
+<!-- ============================== FEEDBACK ============================== -->
+<section id="tab-feedback" class="tab" aria-label="Feedback">
+  <div class="kpis k6" id="fb-cards"></div>
+  <div class="panel"><div class="panel-h"><h2>Where the admin's judgment helps</h2></div>
+    <p class="panel-sub">Grouped by remark tag. Add remarks when you review calls on the Live tab.</p>
+    <div class="tscroll"><table class="tbl" id="fb-tags"><thead><tr><th>Tag</th><th class="r">Calls</th><th class="r">Rejected</th><th class="r">Admin right %</th></tr></thead><tbody></tbody></table></div></div>
+  <div class="panel"><div class="panel-h"><h2>Suggestions from your feedback</h2></div><div class="row"><button type="button" id="fb-suggest" class="primary">Ask the Feedback analyst</button></div><div id="fb-sugg"></div></div>
+</section>
+
+<!-- ============================== SYSTEM ============================== -->
+<section id="tab-risk" class="tab" aria-label="System">
+  <div class="seg sys-seg" id="sys-seg" role="tablist" aria-label="System sections">
+    <button type="button" role="tab" data-sys="health" class="on" aria-selected="true">Health</button>
+    <button type="button" role="tab" data-sys="setup" aria-selected="false">Setup</button>
+    <button type="button" role="tab" data-sys="risk" aria-selected="false">Risk</button>
+    <button type="button" role="tab" data-sys="activity" aria-selected="false">Activity log</button>
+  </div>
+
+  <div class="sys-pane" data-pane="health">
+    <div class="panel"><div class="panel-h"><h2>Status</h2></div>
+      <div class="kill-row">
+        <div class="kill-pill" id="rk-pill"><span class="dot"></span><span>Kill switch —</span></div>
+        <div class="row tight"><button type="button" id="rk-kill" class="danger">KILL SWITCH — stop all new orders</button><button type="button" id="rk-reset">Reset kill switch</button></div>
+      </div>
+      <div class="stat-grid" id="sys-status"></div></div>
+    <div class="panel"><div class="panel-h"><h2>System check</h2><span id="sc-when" class="t3 xs"></span></div>
+      <p class="panel-sub">Quick: database, timezone, real-order lock, demo wallet, AI model, sandbox, backtest pipeline, Upstox login and data freshness, live feed (about 1 minute). Full: also runs the AI Builder end to end on a sample idea with the local model (5–15 minutes).</p>
+      <div class="row"><button type="button" id="sc-quick" class="primary">Run quick check</button><button type="button" id="sc-deep">Run full check (with AI build)</button><span id="sc-stage" class="t2"></span><span id="sc-elapsed" class="t3 mono"></span></div>
+      <div class="progress" id="sc-bar" hidden><div style="width:0%"></div></div>
+      <div class="tscroll"><table class="tbl" id="sc-out"><thead><tr><th>Check</th><th>Result</th><th class="r">Secs</th><th>Detail</th></tr></thead><tbody><tr><td colspan="4" class="empty">No check has run yet. Run the quick check to verify database, order lock, wallet, feed and data freshness.</td></tr></tbody></table></div></div>
+  </div>
+
+  <div class="sys-pane" data-pane="setup" hidden>
+    <div class="panel"><div class="panel-h"><h2>Project phases</h2></div>
+      <p class="panel-sub">Computed live from what is in the database.</p>
+      <div class="tscroll"><table class="tbl" id="ph-out"><thead><tr><th>Phase</th><th>Done</th><th>Gate</th><th>Where you are</th></tr></thead><tbody></tbody></table></div></div>
+    <div class="grid2">
+    <div class="panel"><div class="panel-h"><h2>Phase 4 setup</h2></div>
+      <p class="panel-sub">One click: real history → baseline full evaluation → AI score model. Needs the Upstox login; takes roughly 5–15 minutes for 20 stocks while the live feed keeps running.</p>
+      <div class="form"><label>History from <input id="p4-start" type="date" value="2024-01-01"></label></div>
+      <div class="row"><button type="button" id="p4-go" class="primary">Run phase 4 setup</button><span id="p4-msg" class="t2"></span></div>
+      <div class="progress" id="p4-bar" hidden><div style="width:0%"></div></div>
+      <div class="row xs t3" id="p4-meta" hidden></div>
+      <pre class="log" id="p4-log" hidden style="max-height:320px;overflow:auto"></pre>
+      <div id="p4-out"></div></div>
+    <div class="panel"><div class="panel-h"><h2>Data integrity</h2></div>
+      <p class="panel-sub">Every call, paper trade and wallet balance checked against real Upstox candles.</p>
+      <div class="row"><button type="button" id="ig-check">Verify now</button><button type="button" id="ig-fix" class="primary">Verify and repair</button><span id="ig-msg" class="t2"></span></div>
+      <div id="ig-sum" class="kv" style="margin-top:12px"></div>
+      <div class="tscroll"><table class="tbl" id="ig-out" hidden><thead><tr><th>Kind</th><th>Symbol</th><th>When</th><th>Problem</th></tr></thead><tbody></tbody></table></div></div>
+    </div>
+  </div>
+
+  <div class="sys-pane" data-pane="risk" hidden>
+    <div class="grid2">
+    <div class="panel"><div class="panel-h"><h2>Risk settings</h2></div>
+      <p class="panel-sub">Apply immediately and are saved across restarts. Demo wallet only.</p>
+      <div class="form" id="rs-form"></div>
+      <div class="row"><button type="button" id="rs-save" class="primary">Save risk settings</button><span id="rs-msg" class="t2"></span></div></div>
+    <div class="panel"><div class="panel-h"><h2>Risk state now</h2></div>
+      <div id="rk-out" class="kv kv-wide"></div></div>
+    </div>
+  </div>
+
+  <div class="sys-pane" data-pane="activity" hidden>
+    <div class="panel"><div class="panel-h"><h2>Activity log</h2>
+      <span class="row tight"><select id="au-action" class="sm" aria-label="Action"><option value="">All actions</option></select><input id="au-q" class="sm" placeholder="Search…" aria-label="Search activity"></span></div>
+      <p class="panel-sub">Every admin, engine and paper-broker action. Click a detail to expand it.</p>
+      <div class="tscroll tall"><table class="tbl" id="audit"><thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Detail</th></tr></thead><tbody></tbody></table></div></div>
+  </div>
+</section>
+</main>
+
+<!-- phone bottom navigation -->
+<nav id="bnav" aria-label="Sections">
+  <button type="button" data-go="live" class="on"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 13h12v1.2H2zM3 11l3-4 2.5 2.5L13 4l.9.8-5.3 6.6L6 8.9 4 11.7z" fill="currentColor"/></svg>Live</button>
+  <button type="button" data-go="wallet"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h8A1.5 1.5 0 0 1 13 4.5V5h.5A1.5 1.5 0 0 1 15 6.5v6a1.5 1.5 0 0 1-1.5 1.5h-10A1.5 1.5 0 0 1 2 12.5zM10.5 9a1 1 0 1 0 2 0 1 1 0 0 0-2 0z" fill="currentColor"/></svg>Wallet</button>
+  <button type="button" data-go="backtest"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 2h1.3v10.7H14V14H2zM5 10V7h1.5v3zm3 0V4.5h1.5V10zm3 0V6h1.5v4z" fill="currentColor"/></svg>Backtest</button>
+  <button type="button" data-go="risk"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5l5.5 2v4.2c0 3.2-2.3 5.8-5.5 6.8-3.2-1-5.5-3.6-5.5-6.8V3.5z" fill="currentColor"/></svg>System</button>
+  <button type="button" id="bnav-more" aria-haspopup="dialog" aria-expanded="false"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="3.5" cy="8" r="1.5" fill="currentColor"/><circle cx="8" cy="8" r="1.5" fill="currentColor"/><circle cx="12.5" cy="8" r="1.5" fill="currentColor"/></svg>More</button>
+</nav>
+<div class="sheet" id="more-sheet" hidden role="dialog" aria-label="More sections">
+  <div class="sheet-in">
+    <div class="sheet-h"><b>More</b><button type="button" class="x" data-close aria-label="Close">×</button></div>
+    <button type="button" data-go="models">Strategies</button>
+    <button type="button" data-go="builder">AI Builder</button>
+    <button type="button" data-go="import">Import</button>
+    <button type="button" data-go="feedback">Feedback</button>
+    <button type="button" data-go="data">Data</button>
+  </div>
+</div>
+
+<!-- events drawer -->
+<aside class="drawer" id="ev-drawer" hidden role="dialog" aria-label="Today's events">
+  <div class="drawer-h"><b>Today's events</b><span class="grow"></span><button type="button" class="sm" id="ev-clear">Clear</button><button type="button" class="x" data-close aria-label="Close">×</button></div>
+  <ol class="ev-list" id="ev-list"></ol>
+</aside>
+
+<!-- keyboard shortcuts -->
+<div class="overlay" id="kbd-help" hidden role="dialog" aria-label="Keyboard shortcuts">
+  <div class="overlay-in">
+    <div class="drawer-h"><b>Keyboard shortcuts</b><span class="grow"></span><button type="button" class="x" data-close aria-label="Close">×</button></div>
+    <dl class="kbd-list">
+      <dt><kbd>/</kbd></dt><dd>Filter the watchlist</dd>
+      <dt><kbd>↑</kbd> <kbd>↓</kbd></dt><dd>Move through the watchlist and chart it</dd>
+      <dt><kbd>Alt</kbd> + <kbd>1</kbd>…<kbd>9</kbd></dt><dd>Switch tab (Live, Wallet, Backtest, Strategies, AI Builder, Import, Feedback, Data, System)</dd>
+      <dt><kbd>?</kbd></dt><dd>Show this help</dd>
+      <dt><kbd>Esc</kbd></dt><dd>Close overlays and drawers</dd>
+    </dl>
+  </div>
+</div>
+
+<!-- trade chart -->
+<div class="overlay tc-ov" id="tc" hidden role="dialog" aria-modal="true" aria-labelledby="tc-title">
+  <div class="overlay-in tc-in">
+    <div class="drawer-h"><b id="tc-title">Trade chart</b><span class="t3 xs" id="tc-sub"></span><span class="grow"></span><button type="button" class="x" data-close aria-label="Close trade chart">×</button></div>
+    <div class="tc-body">
+      <div class="ind-legend" id="tc-legend"></div>
+      <div id="tc-chart"></div>
+      <div class="tscroll"><table class="tbl" id="tc-tbl"><thead><tr><th>Side</th><th>Entry</th><th class="r">Price</th><th>Exit</th><th class="r">Price</th><th>Why</th><th class="r">Stop</th><th class="r">Target</th><th class="r">P&amp;L</th></tr></thead><tbody></tbody></table></div>
+    </div>
+  </div>
+</div>
+
+<dialog id="dlg"><form method="dialog"><div id="dlg-body"></div><div class="row"><button value="ok" class="primary">Save</button><button value="cancel">Cancel</button></div></form></dialog>
+<script src="/static/app.js"></script>
+</body>
+</html>
