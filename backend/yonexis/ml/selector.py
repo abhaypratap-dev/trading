@@ -230,6 +230,17 @@ def _rank_corr(a: pd.Series, b: pd.Series) -> float | None:
     return float(a[m].rank().corr(b[m].rank()))
 
 
+def _within_strategy_ic(strat: pd.Series, ev: pd.Series, r: pd.Series) -> dict:
+    per = []
+    for k, idx in strat.groupby(strat).groups.items():
+        ic = _rank_corr(ev[idx], r[idx])
+        if ic is not None and len(idx) >= 100:
+            per.append({"strategy": k, "trades": int(len(idx)), "rank_ic": round(ic, 4)})
+    n = sum(x["trades"] for x in per)
+    return {"rank_ic_within_strategy": round(sum(x["rank_ic"] * x["trades"] for x in per) / n, 4) if n else None,
+            "rank_ic_by_strategy": sorted(per, key=lambda x: -x["trades"])}
+
+
 def prediction_accuracy(test: pd.DataFrame, min_p: float) -> dict:
     """How good are the predictions on trades the models never trained on?
 
@@ -273,6 +284,9 @@ def prediction_accuracy(test: pd.DataFrame, min_p: float) -> dict:
         pos = ee > 0
         out["profit"] = {
             "rank_ic": round(_rank_corr(ee, rr) or 0.0, 4),
+            # same, but only comparing calls of the SAME strategy: does it know when a strategy works, beyond
+            # "this strategy loses less than that one"?
+            **_within_strategy_ic(test.loc[m, "_strategy"], ee, rr),
             "sign_accuracy": round(float(((ee > 0) == (rr > 0)).mean()), 4),   # predicted profit/loss direction matched
             "mae_r": round(float((ee - rr).abs().mean()), 3),
             "mae_r_baseline": round(float((rr - rr.median()).abs().mean()), 3),  # error of always predicting the median R
@@ -349,6 +363,7 @@ def train(ds: pd.DataFrame, weights: pd.Series | None = None) -> dict:
     metrics.update({"oos_accuracy": (acc.get("win_loss") or {}).get("accuracy"),
                     "oos_precision": (acc.get("win_loss") or {}).get("precision"),
                     "oos_rank_ic": (acc.get("profit") or {}).get("rank_ic"),
+                    "oos_rank_ic_within_strategy": (acc.get("profit") or {}).get("rank_ic_within_strategy"),
                     "oos_sign_accuracy": (acc.get("profit") or {}).get("sign_accuracy")})
     model = TrainedModel(kind="selector", features=list(X.columns), model=final, metrics=metrics,
                          meta={"strategies": strategies, "families": families, "stats": stats, "min_p": sel["recommended_min_p"],
@@ -362,7 +377,8 @@ def train(ds: pd.DataFrame, weights: pd.Series | None = None) -> dict:
     report["oos_all_avg_per_trade"], report["oos_ai_avg_per_trade"] = round(all_avg, 2), round(ai_avg, 2)
     report["oos_ai_t_stat"] = _stats(chosen, report["oos_days"])["t_stat"]
     # skill of the model that ranks the trades: profit model's rank IC, or the win/loss model's AUC
-    ic = (report["accuracy"].get("profit") or {}).get("rank_ic")
+    pf = report["accuracy"].get("profit") or {}
+    ic = pf.get("rank_ic_within_strategy", pf.get("rank_ic"))
     skill = (ic is not None and ic >= 0.05) if ev_source == "regression" else bool(report["oos_auc"] and report["oos_auc"] > 0.53)
     # in use only if it beats taking every signal AND the threshold, chosen on earlier data, also held up on later data
     report["beats_baseline"] = bool(skill and report["oos_ai_pick_pnl"] > 0 and ai_avg > all_avg and sel["validation"]["passed"])

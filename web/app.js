@@ -1708,7 +1708,7 @@ function selectorHTML(s) {
   const verdict = champ || s.beats_baseline
     ? `On held-back data the AI's picks made <b class="${cls(ai)}">${inrS(ai, 2)}</b> per trade against <b class="${cls(all)}">${inrS(all, 2)}</b> for taking every signal, so it is <b class="green">used for live calls</b>.`
     : `On held-back data the AI's picks made <b class="${cls(ai)}">${inrS(ai, 2)}</b> per trade against <b class="${cls(all)}">${inrS(all, 2)}</b> for taking every signal${ai > all ? " — better, but " + (ai <= 0 ? "still losing money" : "not by enough") : " — no better"}. So it stays in <b class="amber">shadow</b>: it watches and keeps learning, but does not decide trades yet.`
-      + (s.ev_source === "regression" ? (((s.accuracy || {}).profit || {}).rank_ic ?? 0) < 0.05 ? ` Its profit predictions barely line up with what trades actually made (rank IC ${fmt(((s.accuracy || {}).profit || {}).rank_ic, 3)}; needs 0.05), so the market features don't yet separate good trades from bad ones.` : ""
+      + (s.ev_source === "regression" ? (((s.accuracy || {}).profit || {}).rank_ic_within_strategy ?? ((s.accuracy || {}).profit || {}).rank_ic ?? 0) < 0.05 ? ` Within each strategy its profit predictions barely line up with what trades actually made (rank IC ${fmt(((s.accuracy || {}).profit || {}).rank_ic_within_strategy ?? ((s.accuracy || {}).profit || {}).rank_ic, 3)}; needs 0.05), so the market features don't yet separate good trades from bad ones.` : ""
         : s.oos_auc != null && s.oos_auc < 0.56 ? ` Its AUC of ${fmt(s.oos_auc, 3)} is close to 0.5 (a coin flip), so the market features don't yet separate winners from losers well.` : "");
   const by = (s.oos_ai_pick_by_strategy || []).slice().sort((a, b) => b.count - a.count), mx = Math.max(1, ...by.map(x => x.count));
   const kp = (k, v, c = "", sub = "") => `<div class="stat"><div class="k">${k}</div><div class="v ${c}">${v}</div>${sub ? `<div class="s">${sub}</div>` : ""}</div>`;
@@ -1739,7 +1739,8 @@ function accuracyHTML(s) {
       ${kp("Win / loss right", pct1(w.accuracy), better(w.accuracy, w.always_majority), `always guessing “${w.base_win_rate >= 0.5 ? "win" : "loss"}”: ${pct1(w.always_majority)}`)}
       ${kp(`Calls ≥ ${Math.round((w.min_p || 0) * 100)}% that won`, pct1(w.precision), better(w.precision, w.base_win_rate), `${Number(w.calls || 0).toLocaleString("en-IN")} calls · all trades won ${pct1(w.base_win_rate)}`)}
       ${kp("Win chance AUC", fmt(w.auc, 3), "", "0.5 = coin flip")}
-      ${p ? kp("Profit model rank IC", fmt(p.rank_ic, 3), p.rank_ic >= 0.05 ? "green" : "", "0 = no skill · 0.05+ is useful") : ""}
+      ${p ? kp("Profit model rank IC", fmt(p.rank_ic, 3), "", "all calls · 0 = no skill") : ""}
+      ${p && p.rank_ic_within_strategy != null ? kp("Rank IC within a strategy", fmt(p.rank_ic_within_strategy, 3), p.rank_ic_within_strategy >= 0.05 ? "green" : "", "same strategy, different moments · 0.05+ is useful") : ""}
       ${p ? kp("Profit / loss direction right", pct1(p.sign_accuracy), "", `predicted profit on ${Number(p.predicted_positive || 0).toLocaleString("en-IN")}: they made ${R(p.actual_r_when_predicted_positive)} avg`) : ""}
     </div>
     ${p && p.quintiles ? `<div class="tscroll"><table class="tbl"><thead><tr><th>Trades ranked by predicted profit</th><th class="r">Trades</th><th class="r">Predicted</th><th class="r">Actual avg</th></tr></thead><tbody>
@@ -1758,7 +1759,7 @@ function selectivityHTML(s) {
   return `<div class="ai-sel"><div class="ts-h">How picky should the AI be? <span class="t3 xs">a call is taken only if its win chance is at least this. Lower = more trades, usually worse quality.</span></div>
     <div class="tscroll"><table class="tbl"><thead><tr><th>Needs win chance ≥</th><th class="r">Trades (held-back)</th><th class="r">Win %</th><th class="r">Avg / trade</th><th class="r">Total</th><th class="r" title="t-statistic of the average: about 2 or more means it is unlikely to be luck">Confidence (t)</th><th class="r" title="Threshold chosen on the earlier half, judged on the later half it never saw">Later half avg</th><th></th></tr></thead><tbody>
     ${t.map(r => { const a = r.all, on = Math.abs(r.min_p - inUse) < 1e-9;
-      return `<tr class="${on ? "sel" : ""}"><td><b>${Math.round(r.min_p * 100)}%</b>${Math.abs(r.min_p - (s.min_p ?? -1)) < 1e-9 ? ' <span class="pill pass xs" title="chosen on earlier data">validated</span>' : ""}</td>
+      return `<tr class="${on ? "sel" : ""}"><td><b>${Math.round(r.min_p * 100)}%</b>${v.passed && Math.abs(r.min_p - (s.min_p ?? -1)) < 1e-9 ? ' <span class="pill pass xs" title="chosen on earlier data, held up on later data">validated</span>' : ""}</td>
         <td class="r">${cell(a)}</td><td class="r">${pct1(a.win_rate)}</td><td class="r ${cls(a.avg)}">${a.trades ? inrS(a.avg, 0) : "—"}</td><td class="r ${cls(a.pnl)}">${a.trades ? inrS(a.pnl) : "—"}</td>
         <td class="r ${a.t_stat >= 2 ? "green" : a.t_stat != null && a.t_stat < 1 ? "t3" : ""}">${a.t_stat == null ? "—" : fmt(a.t_stat, 2)}</td>
         <td class="r ${cls(r.late.avg)}">${r.late.trades ? inrS(r.late.avg, 0) + `<span class="t3 xs"> (${r.late.trades})</span>` : "—"}</td>

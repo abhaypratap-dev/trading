@@ -647,7 +647,7 @@ def test_profit_model_learns_trade_size_that_win_loss_cannot():
     acc = rep["accuracy"]
     assert rep["ev_source"] == "regression" and model.meta["ev_source"] == "regression" and model.r_model is not None
     q = acc["profit"]["quintiles"]
-    assert acc["profit"]["rank_ic"] >= 0.05 and q[-1]["actual_r"] > q[0]["actual_r"] + 0.5
+    assert acc["profit"]["rank_ic_within_strategy"] >= 0.05 and q[-1]["actual_r"] > q[0]["actual_r"] + 0.5
     assert {"accuracy", "always_majority", "precision", "auc", "calibration"} <= set(acc["win_loss"])
     assert rep["beats_baseline"] and model.metrics["oos_rank_ic"] == acc["profit"]["rank_ic"]
     sc = selector.score(model, _selector_rows(50, 2, edge=True))
