@@ -173,6 +173,7 @@ class FetchBody(BaseModel):
     symbols: list[str]
     source: str = "yahoo"
     interval: str = "5m"
+    intervals: list[str] | None = None      # several at once; overrides `interval`
     start: str
     end: str
 
@@ -180,17 +181,166 @@ class FetchBody(BaseModel):
 @app.post("/api/data/fetch", dependencies=A)
 def data_fetch(b: FetchBody):
     conn = get_connector(b.source)
+    ivs = [x for x in (b.intervals or [b.interval]) if x]
     out = {}
-    for s in b.symbols:
-        try:
-            df = conn.fetch_history(s, b.start, b.end, b.interval)
-            out[s] = db.save_candles(s, df, b.interval, b.source)
-        except Exception as e:
-            out[s] = f"error: {e}"
+    for iv in ivs:
+        for s in b.symbols:
+            key = s if len(ivs) == 1 else f"{s} {iv}"
+            try:
+                df = conn.fetch_history(s, b.start, b.end, iv)
+                out[key] = db.save_candles(s, df, iv, b.source)
+            except Exception as e:
+                out[key] = f"error: {e}"
     total = sum(v for v in out.values() if isinstance(v, int))
-    db.insert_row(db.datasets, name=f"{b.source} {b.interval} {b.start}..{b.end}", kind="candles", source=b.source,
+    db.insert_row(db.datasets, name=f"{b.source} {','.join(ivs)} {b.start}..{b.end}", kind="candles", source=b.source,
                   rows=total, symbols=db.j(b.symbols), start=b.start, end=b.end, meta=db.j(out))
-    return {"saved_rows": out}
+    return {"saved_rows": out, "total": total}
+
+
+class CheckBody(BaseModel):
+    symbols: list[str] | None = None        # None = everything stored
+    intervals: list[str] = ["5m"]
+    start: str = "2024-01-01"
+    end: str | None = None
+
+
+@app.get("/api/data/check/summary", dependencies=A)
+def data_check_summary():
+    """Step 1: what is loaded (per interval: symbols, earliest/latest candle, candles)."""
+    inv = db.candle_inventory()
+    by = {}
+    for c in inv:
+        if c.get("source") == "simulated":
+            continue
+        b = by.setdefault(c["interval"], {"interval": c["interval"], "symbols": 0, "candles": 0, "first": None, "last": None,
+                                          "stocks": 0, "futures": 0})
+        b["symbols"] += 1
+        b["candles"] += int(c["n"])
+        b["futures" if str(c["symbol"]).endswith("-FUT") else "stocks"] += 1
+        b["first"] = min(filter(None, [b["first"], str(c["first"])]))
+        b["last"] = max(filter(None, [b["last"], str(c["last"])]))
+    return {"intervals": sorted(by.values(), key=lambda x: x["interval"]), "last_check": db.get_setting("data_check_last")}
+
+
+@app.post("/api/data/check", dependencies=A)
+def data_check(b: CheckBody):
+    """Step 2: verify the chosen symbols / intervals / period day by day."""
+    from yonexis import datacheck
+    syms = [x.upper() for x in (b.symbols or [])] or sorted({c["symbol"] for c in db.candle_inventory()
+                                                             if c["interval"] in b.intervals and c.get("source") != "simulated"})
+    if not syms:
+        raise HTTPException(400, "nothing stored for those intervals yet")
+    return {"job_id": jobs.submit("data_check", lambda progress: datacheck.verify(syms, b.intervals, b.start, b.end, progress))}
+
+
+@app.post("/api/data/check/repair", dependencies=A)
+def data_check_repair():
+    """Step 3: refetch only what the last check found missing, then check again."""
+    from yonexis import datacheck
+    j = jobs.latest("data_check")
+    if not j or j.get("status") != "done":
+        raise HTTPException(400, "run a data check first")
+    r = j["result"]
+    if not any(x.get("missing_days") or x.get("incomplete") for x in r["rows"]):
+        raise HTTPException(400, "the last check found nothing missing")
+
+    def work(progress):
+        out = datacheck.repair(r["rows"], r["start"], r["end"], progress)
+        jobs.JOBS[j["id"]]["result"] = out["after"] if j["id"] in jobs.JOBS else out["after"]
+        return out
+    return {"job_id": jobs.submit("data_repair", work)}
+
+
+@app.get("/api/upstox/plan-check", dependencies=A)
+def upstox_plan_check():
+    from yonexis import futcont
+    return futcont.plan_check()
+
+
+class ContBody(BaseModel):
+    symbols: list[str] | None = None        # None = every futures symbol in the watchlist
+    start: str = "2024-01-01"
+    intervals: list[str] = ["5m"]
+    roll_days: int = 0
+
+
+@app.post("/api/data/futures-continuous", dependencies=A)
+def futures_continuous(b: ContBody):
+    from yonexis import futcont
+    syms = [x.upper() for x in (b.symbols or []) if x.upper().endswith("-FUT")]
+    if not syms:
+        syms = [x for x in (live.engine.symbols if live.engine else db.get_watchlist(settings.WATCHLIST)) if x.endswith("-FUT")]
+    if not syms:
+        raise HTTPException(400, "choose futures symbols (names ending in -FUT)")
+    if not (0 <= b.roll_days <= 10):
+        raise HTTPException(400, "roll days must be 0-10")
+    return {"job_id": jobs.submit("fut_cont", lambda progress: futcont.build_many(syms, b.start, b.intervals, progress, b.roll_days))}
+
+
+@app.get("/api/data/futures-continuous", dependencies=A)
+def futures_continuous_meta():
+    return db.get_setting("fut_continuous") or {}
+
+
+@app.get("/api/symbols/search", dependencies=A)
+def symbols_search(q: str = "", limit: int = 30):
+    """Universal symbol search for pickers: watchlist, stored data and every NSE stock / future Upstox knows."""
+    q = q.strip().upper()
+    syms = live.engine.symbols if live.engine else db.get_watchlist(settings.WATCHLIST)
+    stored = sorted({c["symbol"] for c in db.candle_inventory()})
+    out, seen = [], set()
+
+    def add(sym, name, kind):
+        if sym not in seen:
+            seen.add(sym)
+            out.append({"symbol": sym, "name": name, "kind": kind})
+    for x in syms:
+        if not q or q in x:
+            add(x, "in watchlist", "watch")
+    for x in stored:
+        if not q or q in x:
+            add(x, "stored data", "stored")
+    if q and settings.LIVE_CONNECTOR == "upstox":
+        try:
+            for r in _upstox().instruments.search(q, limit=limit):
+                add(r["symbol"], r.get("name") or "", "future" if r.get("future") else "stock")
+        except Exception:
+            pass
+    rank = lambda r: (not r["symbol"].startswith(q), r["symbol"].endswith("-FUT"), r["symbol"])
+    return sorted(out, key=rank)[:limit] if q else out[:limit]
+
+
+@app.get("/api/data/export", dependencies=A)
+def data_export(symbols: str, intervals: str = "5m", start: str | None = None, end: str | None = None, fmt: str = "csv"):
+    """Download stored candles as CSV or Excel (one sheet per symbol+interval)."""
+    import io
+    from fastapi.responses import Response
+    syms = [x.strip().upper() for x in symbols.split(",") if x.strip()]
+    ivs = [x.strip() for x in intervals.split(",") if x.strip()]
+    if not syms or not ivs:
+        raise HTTPException(400, "choose at least one symbol and interval")
+    parts = []
+    for sym in syms:
+        for iv in ivs:
+            df = db.load_candles(sym, iv, start, end)
+            if not df.empty:
+                d = df.reset_index().rename(columns={"index": "ts"})
+                d.insert(0, "interval", iv)
+                d.insert(0, "symbol", sym)
+                parts.append(d)
+    if not parts:
+        raise HTTPException(404, "no stored candles for that selection")
+    name = f"yonexis-{'-'.join(syms[:3])}{'-etc' if len(syms) > 3 else ''}-{'-'.join(ivs)}"
+    if fmt == "xlsx":
+        buf = io.BytesIO()
+        with pd.ExcelWriter(buf, engine="openpyxl") as xw:
+            for d in parts:
+                sheet = f"{d['symbol'].iloc[0]} {d['interval'].iloc[0]}"[:31].replace("/", "_")
+                d.drop(columns=["symbol", "interval"]).to_excel(xw, sheet_name=sheet, index=False)
+        return Response(buf.getvalue(), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        headers={"Content-Disposition": f'attachment; filename="{name}.xlsx"'})
+    csv = pd.concat(parts).to_csv(index=False)
+    return Response(csv, media_type="text/csv", headers={"Content-Disposition": f'attachment; filename="{name}.csv"'})
 
 
 class HistBody(BaseModel):
@@ -335,8 +485,9 @@ def strategy_indicators():
     from yonexis.sdk.indicators import CHART
     from yonexis.strategies import REGISTRY
     m = {n: list(getattr(c, "chart_indicators", []) or []) for n, c in REGISTRY.items()}
-    m["first_red_candle_zone"] = m.get("first_red_candle_zone") or ["vwap"]
-    m["hari_master_block"] = m.get("hari_master_block") or ["vwap", "ema21"]
+    # your two strategies use only their own levels (zone high/low; order blocks) - no extra indicators
+    m["first_red_candle_zone"] = m.get("first_red_candle_zone") or []
+    m["hari_master_block"] = m.get("hari_master_block") or []
     m["pair_trading"], m["ai_pick"] = ["vwap"], ["vwap", "ema9", "ema21"]
     return {"by_strategy": m, "available": list(CHART),
             "descriptions": {n: (c.description or "") for n, c in REGISTRY.items()},
@@ -360,6 +511,194 @@ def lab_run(b: LabBody):
 @app.get("/api/lab/last", dependencies=A)
 def lab_last():
     return db.get_setting("lab_last") or {}
+
+
+class ZoneBody(BaseModel):
+    symbols: list[str]
+    start: str
+    end: str | None = None
+    max_cycles: int = 2
+    target_mult: float = 1.5
+    entry_cutoff: str = "14:30"
+    allow_short: bool = True
+    capital_per_trade: float = 100000.0
+    include_costs: bool = True
+    min_zone_pct: float = 0.0
+    max_zone_pct: float = 100.0
+    lot_targets: list[float] | None = None        # one target multiplier per lot
+    target_base: str = "zone"                     # zone | iz  (range of the zone candle / of the entry candle)
+    spike: bool = True                            # False: entries/stops only on a candle open/close outside the zone
+    square_off: str = "15:15"
+    refined: bool = False                         # leave out days with flat no-trade or missing candles
+    configs: list[dict] | None = None             # several {max_cycles, lot_targets, target_base, spike} compared in one run
+
+
+def _check_hhmm(v: str, what: str) -> str:
+    try:
+        h, m = map(int, str(v).split(":"))
+        assert (9, 20) <= (h, m) <= (15, 30) and 0 <= m < 60
+    except Exception:
+        raise HTTPException(400, f"{what} must be a time between 09:20 and 15:30 (HH:MM)")
+    return f"{h:02d}:{m:02d}"
+
+
+@app.post("/api/zone/run", dependencies=A)
+def zone_run(b: ZoneBody):
+    """YONEXIS AI dashboard: replay the First Red Candle Zone with the admin's rules for one day or a date range."""
+    from yonexis import zone_lab
+    if not b.symbols:
+        raise HTTPException(400, "choose at least one symbol")
+    if not (1 <= b.max_cycles <= 10) or not (0.1 <= b.target_mult <= 20):
+        raise HTTPException(400, "entries per day must be 1-10 and the target multiplier 0.1-20")
+    end = b.end or b.start
+    if pd.Timestamp(end) < pd.Timestamp(b.start):
+        raise HTTPException(400, "end date is before start date")
+    b.target_base = {"iz_entry": "iz"}.get(b.target_base, b.target_base)
+    if b.target_base not in zone_lab.TARGET_BASES:
+        raise HTTPException(400, f"target multiplier must be one of {list(zone_lab.TARGET_BASES)}")
+    _check_hhmm(b.square_off, "square-off time")
+    params = b.model_dump(exclude={"symbols", "start", "end", "configs"})
+    configs = []
+    for c in (b.configs or [])[:12]:
+        mc = int(c.get("max_cycles") or b.max_cycles)
+        lt = [float(x) for x in (c.get("lot_targets") or [c.get("target_mult") or b.target_mult]) if x not in (None, "")][:10]
+        if not (1 <= mc <= 10) or not lt or any(not (0.1 <= x <= 20) for x in lt):
+            raise HTTPException(400, "each configuration needs 1-10 entries per day, 1-10 lots and targets between 0.1 and 20")
+        tb = c.get("target_base") or b.target_base
+        tb = {"iz_entry": "iz"}.get(tb, tb)
+        if tb not in zone_lab.TARGET_BASES:
+            raise HTTPException(400, f"target multiplier must be one of {list(zone_lab.TARGET_BASES)}")
+        sp = b.spike if c.get("spike") is None else bool(c.get("spike"))
+        configs.append({"max_cycles": mc, "lot_targets": lt, "target_mult": lt[0], "target_base": tb, "spike": sp})
+    conn = None
+    if settings.LIVE_CONNECTOR == "upstox" and _upstox().tokens.token:
+        conn = live.engine.feed.conn if live.engine and live.engine.feed is not None else _upstox().UpstoxConnector()
+    syms = [x.strip().upper() for x in b.symbols if x.strip()]
+    db.set_setting("zone_dash_last_params", {**params, "symbols": syms, "start": b.start, "end": end, "configs": configs})
+    return {"job_id": jobs.submit("zone_run", lambda progress: zone_lab.run(syms, b.start, end, params, progress, conn, configs or None))}
+
+
+class ZoneAIBody(BaseModel):
+    symbols: list[str] | None = None              # futures; empty = every future with stored 5-minute candles
+    start: str
+    end: str
+    lot1: list[float] = Field(default_factory=lambda: [1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5])
+    lot2: list[float] = Field(default_factory=lambda: [20, 18, 16, 14, 12, 10, 8, 6])
+    entries: list[int] = Field(default_factory=lambda: [1, 2])
+    bases: list[str] = Field(default_factory=lambda: ["zone", "iz"])
+    spikes: list[bool] = Field(default_factory=lambda: [True, False])
+    sizes: list[int] = Field(default_factory=lambda: [5, 10, 15, 20, 25, 30, 35, 40])
+    train_share: float = 0.7
+    entry_cutoff: str = "14:30"
+    square_off: str = "15:15"
+    allow_short: bool = True
+    include_costs: bool = True
+    refined: bool = True
+    max_zone_pct: float = 100.0
+
+
+@app.post("/api/zone/ai-search", dependencies=A)
+def zone_ai_search(b: ZoneAIBody):
+    """YONEXIS AI backtest: every configuration of the zone strategy on every future, then the best symbol sets."""
+    from yonexis import zone_ai
+    if pd.Timestamp(b.end) < pd.Timestamp(b.start):
+        raise HTTPException(400, "end date is before start date")
+    if not (0.3 <= b.train_share <= 0.9):
+        raise HTTPException(400, "train share must be between 30% and 90%")
+    if any(x not in ("zone", "iz") for x in b.bases) or not b.bases or not b.spikes or not b.entries:
+        raise HTTPException(400, "choose at least one target multiplier (zone / iz), one spike setting and one entries value")
+    if any(not (0.1 <= x <= 50) for x in b.lot1 + b.lot2) or not b.lot1 or not b.lot2 or any(not (1 <= e <= 10) for e in b.entries):
+        raise HTTPException(400, "targets must be 0.1-50 and entries per day 1-10")
+    grid = {"lot1": b.lot1, "lot2": b.lot2, "entries": b.entries, "bases": b.bases, "spikes": b.spikes,
+            "sizes": [n for n in b.sizes if 1 <= n <= 200], "train_share": b.train_share}
+    n = len(zone_ai.build_configs(grid))
+    if not n or n > zone_ai.MAX_CONFIGS:
+        raise HTTPException(400, f"{n} configurations - need 1 to {zone_ai.MAX_CONFIGS} (lot 1 targets must be <= lot 2 targets)")
+    params = {"entry_cutoff": b.entry_cutoff, "square_off": _check_hhmm(b.square_off, "square-off time"), "allow_short": b.allow_short,
+              "include_costs": b.include_costs, "refined": b.refined, "max_zone_pct": b.max_zone_pct}
+    db.set_setting("zone_ai_last_params", b.model_dump())
+    syms = [x.strip().upper() for x in (b.symbols or []) if x.strip()]
+    return {"job_id": jobs.submit("zone_ai", lambda progress: zone_ai.run(syms or None, b.start, b.end, params, grid, progress)),
+            "configs": n}
+
+
+@app.get("/api/zone/ai-last-params", dependencies=A)
+def zone_ai_last():
+    return db.get_setting("zone_ai_last_params") or {}
+
+
+# ---------------------------------------------------------------------- named watchlists (stocks + futures)
+class NamedList(BaseModel):
+    name: str
+    symbols: list[str]
+    old_name: str | None = None
+
+
+@app.get("/api/watchlists", dependencies=A)
+def watchlists_get():
+    return db.get_setting("named_watchlists") or {}
+
+
+@app.put("/api/watchlists", dependencies=A)
+def watchlists_put(b: NamedList):
+    name = b.name.strip()
+    if not name or len(name) > 40:
+        raise HTTPException(400, "give the list a name (up to 40 characters)")
+    lists = db.get_setting("named_watchlists") or {}
+    if b.old_name and b.old_name != name:
+        if name in lists:
+            raise HTTPException(400, f"a list called {name} already exists")
+        lists.pop(b.old_name, None)
+    syms = list(dict.fromkeys(x.strip().upper() for x in b.symbols if x.strip()))[:500]
+    lists[name] = syms
+    db.set_setting("named_watchlists", lists)
+    db.log("admin", "named_watchlist_saved", {"name": name, "symbols": len(syms)})
+    return lists
+
+
+@app.delete("/api/watchlists/{name}", dependencies=A)
+def watchlists_delete(name: str):
+    lists = db.get_setting("named_watchlists") or {}
+    lists.pop(name, None)
+    db.set_setting("named_watchlists", lists)
+    db.log("admin", "named_watchlist_deleted", {"name": name})
+    return lists
+
+
+@app.get("/api/zone/last-params", dependencies=A)
+def zone_last_params():
+    return db.get_setting("zone_dash_last_params") or {}
+
+
+class TuneBody(BaseModel):
+    strategy: str
+    reset: bool = False          # back to the strategy's default settings
+
+
+@app.post("/api/lab/apply-tuning", dependencies=A)
+def lab_apply_tuning(b: TuneBody):
+    """Save the Strategy Lab's tuned settings (target, trades per day, stocks, time windows) as a new strategy version."""
+    rows = [r for r in db.fetch(db.strategies, db.strategies.c.name == b.strategy, order=db.strategies.c.version)]
+    if not rows:
+        raise HTTPException(404, f"unknown strategy {b.strategy}")
+    cur = rows[-1]
+    old = db.uj(cur["params"], {}) or {}
+    if b.reset:
+        params = {k: v for k, v in old.items() if not k.startswith("_") and k not in ("rr", "max_trades_per_day")}
+    else:
+        tun = next((t for t in (db.get_setting("lab_last") or {}).get("tuning", []) if t.get("strategy") == b.strategy), None)
+        if not tun or not tun.get("params"):
+            raise HTTPException(400, "no tuned settings for this strategy in the last Strategy Lab run")
+        params = {**old, **tun["params"]}
+    vid = db.insert_row(db.strategies, name=cur["name"], version=cur["version"] + 1, origin=cur["origin"], status=cur["status"],
+                        code=cur["code"], params=db.j(params), spec=cur["spec"], review=cur["review"])
+    db.update_row(db.strategies, cur["id"], status="retired")
+    from yonexis.strategies.loader import SCOPE_KEY, get_scope
+    sc = get_scope()
+    if sc and sc.get("strategy") == b.strategy:                # the paper test follows the new version
+        db.set_setting(SCOPE_KEY, {**sc, "version": cur["version"] + 1})
+    db.log("admin", "strategy_tuning_applied" if not b.reset else "strategy_tuning_reset", {"strategy": b.strategy, "params": params})
+    return {"strategy": b.strategy, "version": cur["version"] + 1, "params": params, "id": vid}
 
 
 class AiThresholdBody(BaseModel):
@@ -505,31 +844,52 @@ class BacktestBody(BaseModel):
     config: dict = Field(default_factory=dict)
     param_space: dict | None = None
     baseline_net_pnl: float | None = None
+    refined: bool = False                 # leave out days with flat no-trade or missing candles
+    square_off: str | None = None         # HH:MM, default = the admin's square-off setting
+
+
+def _bt_prepare(b: "BacktestBody") -> tuple[dict, dict, list]:
+    """Data + params for a Backtest-tab run: refined data filter and the square-off time."""
+    from yonexis import datacheck
+    data = load_data(b.symbols, b.interval, b.start, b.end, b.source)
+    skipped = []
+    if b.refined:
+        for s_ in list(data):
+            data[s_], sk = datacheck.refine(data[s_], b.interval, s_)
+            skipped += sk
+            if data[s_].empty:
+                data.pop(s_)
+        if not data:
+            raise HTTPException(400, "refined data removed every day - nothing left to test")
+    params = {**(b.params or {}), "_square_off": _check_hhmm(b.square_off, "square-off time") if b.square_off else db.square_off_time()}
+    return data, params, skipped
 
 
 @app.post("/api/backtests/quick", dependencies=A)
 def quick_backtest(b: BacktestBody):
     row = strategy_code(b.strategy, b.version)
-    data = load_data(b.symbols, b.interval, b.start, b.end, b.source)
-    r = sandbox_run(row["code"], data, {"kind": "quick", "params": b.params, "config": config_from(b.config)})
+    data, params, skipped = _bt_prepare(b)
+    r = sandbox_run(row["code"], data, {"kind": "quick", "params": params, "config": config_from(b.config)})
     if not r.get("ok"):
         raise HTTPException(400, {"error": r.get("error"), "trace": r.get("trace")})
     res = r["result"]
     bid = db.insert_row(db.backtests, strategy=b.strategy, strategy_version=row["version"], kind="quick", params=db.j(b.params),
                         symbols=db.j(b.symbols), start=b.start, end=b.end,
-                        result=db.j({"metrics": res["metrics"], "trades": res["trades"][:3000]}))
-    return {"id": bid, **res}
+                        result=db.j({"metrics": res["metrics"], "trades": res["trades"][:3000], "refined_skipped": skipped,
+                                     "square_off": params["_square_off"]}))
+    return {"id": bid, **res, "refined_skipped": skipped, "square_off": params["_square_off"]}
 
 
 @app.post("/api/backtests/full", dependencies=A)
 def full_backtest(b: BacktestBody):
     row = strategy_code(b.strategy, b.version)
-    data = load_data(b.symbols, b.interval, b.start, b.end, b.source)
+    data, params, skipped = _bt_prepare(b)
 
     def work(progress):
         progress(f"loaded {len(data)} stocks, {sum(len(v) for v in data.values()):,} {b.interval} candles ({b.source}); "
-                 f"starting full evaluation of {b.strategy} v{row['version']}", {})
-        r = sandbox_run(row["code"], data, {"kind": "full", "params": b.params, "config": config_from(b.config),
+                 + (f"refined data left out {len(skipped)} symbol-days; " if b.refined else "")
+                 + f"square-off {params['_square_off']}; starting full evaluation of {b.strategy} v{row['version']}", {})
+        r = sandbox_run(row["code"], data, {"kind": "full", "params": params, "config": config_from(b.config),
                                             "param_space": b.param_space, "baseline_net_pnl": b.baseline_net_pnl}, timeout=3600,
                         progress=lambda m, i: progress(m.strip(), i))
         if not r.get("ok"):
@@ -540,6 +900,7 @@ def full_backtest(b: BacktestBody):
         progress("writing the report (local LLM)", {})
         ev["report"] = pipeline.report(ev)
         progress("saved", {})
+        ev["refined_skipped"], ev["square_off"] = skipped, params["_square_off"]
         ev["id"] = db.insert_row(db.backtests, strategy=b.strategy, strategy_version=row["version"], kind="full",
                                  params=db.j({**b.params, "_source": b.source}), symbols=db.j(b.symbols), start=b.start, end=b.end, result=db.j(ev))
         return ev
@@ -927,6 +1288,24 @@ class MarginBody(BaseModel):
     fut_margin_pct: float
 
 
+class SquareOffBody(BaseModel):
+    time: str
+
+
+@app.get("/api/settings/square-off", dependencies=A)
+def square_off_get():
+    return {"time": db.square_off_time()}
+
+
+@app.put("/api/settings/square-off", dependencies=A)
+def square_off_put(b: SquareOffBody):
+    t = _check_hhmm(b.time, "square-off time")
+    db.set_setting("square_off_time", t)
+    db._SQ_CACHE.clear()
+    db.log("admin", "square_off_time", {"time": t})
+    return {"time": t}
+
+
 @app.get("/api/wallet/margin", dependencies=A)
 def wallet_margin():
     from yonexis.broker.paper import margins
@@ -1176,8 +1555,14 @@ MAX_WATCHLIST = 300
 @app.get("/api/watchlist", dependencies=A)
 def get_watchlist():
     syms = live.engine.symbols if live.engine else db.get_watchlist(settings.WATCHLIST)
-    strategies = [r["name"] for r in latest_versions().values() if r["status"] in ("paper", "live_small", "live")]
-    return {"symbols": syms, "max": MAX_WATCHLIST, "strategies_making_calls": strategies}
+    from yonexis.strategies.loader import get_scope, trading_strategies
+    sc = get_scope()
+    if sc and sc.get("strategy") in ("ai_pick", "pair_trading"):
+        strategies = [sc["strategy"]]
+    else:
+        strategies = [r["name"] for r, _ in trading_strategies()]
+    return {"symbols": syms, "max": MAX_WATCHLIST, "strategies_making_calls": strategies,
+            "scope": {"strategy": sc["strategy"], "symbols": len(sc.get("symbols") or [])} if sc else None}
 
 
 class SymbolBody(BaseModel):

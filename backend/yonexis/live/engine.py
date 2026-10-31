@@ -250,6 +250,9 @@ class LiveEngine:
             q = self.feed.quote(sym)
             if not q or q.get("ltp") is None:
                 continue
+            prm = db.uj(row.get("params"), {}) or {}
+            if prm.get("_windows") and not any(a <= now.strftime("%H:%M") < b for a, b in prm["_windows"]):
+                continue                                   # tuned settings: no entries outside the chosen time windows
             ltp = float(q["ltp"])
             live = [o for o in orders if not o.get("valid_until") or now.strftime("%H:%M") <= o["valid_until"]]
             def reached(o):
@@ -353,7 +356,7 @@ class LiveEngine:
         if self.feed is not None and not (self.feed.status == "connected"):
             return []                                  # no live prices: never fill paper trades on stale data
         quotes = {s: self.quote(s, strict=True) for s in list(self.symbols)}
-        sq = self.market_time() >= datetime.strptime("15:15", "%H:%M").time()
+        sq = self.market_time() >= datetime.strptime(db.square_off_time(), "%H:%M").time()
         try:
             ts = None
             if self.sim:

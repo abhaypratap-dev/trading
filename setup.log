@@ -1,6 +1,6 @@
 
 [1;34m==> Checking this Mac[0m
-CPU: arm64   RAM: 24 GB   Free disk: 1610 GB
+CPU: arm64   RAM: 24 GB   Free disk: 1601 GB
 Docker: Docker version 29.9.2, build a82e528
 Ollama CLI: /usr/local/bin/ollama
 
@@ -12,35 +12,35 @@ Ollama CLI: /usr/local/bin/ollama
 #1 reading from stdin 1.39kB done
 #1 DONE 0.0s
 
-#2 [api internal] load build definition from Dockerfile
+#2 [scheduler internal] load build definition from Dockerfile
 #2 transferring dockerfile: 692B done
 #2 DONE 0.0s
 
-#3 [scheduler internal] load metadata for docker.io/library/python:3.12-slim
-#3 DONE 1.4s
+#3 [api internal] load metadata for docker.io/library/python:3.12-slim
+#3 DONE 2.7s
 
-#4 [sandbox internal] load .dockerignore
+#4 [scheduler internal] load .dockerignore
 #4 transferring context: 2B done
 #4 DONE 0.0s
 
-#5 [sandbox 1/9] FROM docker.io/library/python:3.12-slim@sha256:aa943ce411423c7582288f18707ff66eddcbaeb510502d747a72aeb34f30d159
+#5 [api 1/9] FROM docker.io/library/python:3.12-slim@sha256:aa943ce411423c7582288f18707ff66eddcbaeb510502d747a72aeb34f30d159
 #5 resolve docker.io/library/python:3.12-slim@sha256:aa943ce411423c7582288f18707ff66eddcbaeb510502d747a72aeb34f30d159 done
 #5 DONE 0.0s
 
-#6 [api internal] load build context
-#6 transferring context: 987.16kB 0.0s done
+#6 [sandbox internal] load build context
+#6 transferring context: 1.18MB 0.0s done
 #6 DONE 0.0s
 
-#7 [scheduler 4/9] COPY backend/requirements.txt /app/backend/requirements.txt
+#7 [api 4/9] COPY backend/requirements.txt /app/backend/requirements.txt
 #7 CACHED
 
-#8 [scheduler 2/9] RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 curl tzdata && rm -rf /var/lib/apt/lists/*
+#8 [api 2/9] RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 curl tzdata && rm -rf /var/lib/apt/lists/*
 #8 CACHED
 
-#9 [scheduler 3/9] WORKDIR /app
+#9 [api 3/9] WORKDIR /app
 #9 CACHED
 
-#10 [scheduler 5/9] RUN pip install --prefer-binary --retries 10 --timeout 60 -r /app/backend/requirements.txt
+#10 [api 5/9] RUN pip install --prefer-binary --retries 10 --timeout 60 -r /app/backend/requirements.txt
 #10 CACHED
 
 #11 [api 6/9] COPY backend /app/backend
@@ -49,39 +49,39 @@ Ollama CLI: /usr/local/bin/ollama
 #12 [api 7/9] COPY web /app/web
 #12 DONE 0.0s
 
-#13 [api 8/9] WORKDIR /app/backend
+#13 [sandbox 8/9] WORKDIR /app/backend
 #13 DONE 0.0s
 
-#14 [sandbox 9/9] RUN useradd -m -u 1000 yonexis && mkdir -p /app/data /sandbox_queue && chown -R yonexis /app /sandbox_queue
+#14 [api 9/9] RUN useradd -m -u 1000 yonexis && mkdir -p /app/data /sandbox_queue && chown -R yonexis /app /sandbox_queue
 #14 DONE 0.2s
 
-#15 [scheduler] exporting to image
+#15 [api] exporting to image
 #15 exporting layers 0.1s done
-#15 exporting manifest sha256:1b49bb87f7c028a03ffb46c0f83c950e76441bca1c4db2a53a591f27b707718f done
-#15 exporting config sha256:ab2ac2adf9788c1c101f81cf716cb8114436aece2e014ae06ed7e14e1e4df0cd done
-#15 exporting attestation manifest sha256:d26fe6b672f73b9231405c0c28efdcf93ac03e5d0c1ceafa3caef5aba911a39a 0.0s done
-#15 exporting manifest list sha256:3c08bc0326ae9840236ae3b623fd094acf10cac85f98c00c110f7f792c9ae099
-#15 exporting manifest list sha256:3c08bc0326ae9840236ae3b623fd094acf10cac85f98c00c110f7f792c9ae099 done
+#15 exporting manifest sha256:262973f69ec051ba38f6b000dde40698469da7aaaa08c866a5344bbb9d251ab3 done
+#15 exporting config sha256:df6865e43a6b10871c1b5d8ed3aed32a7c78abc2309369f01a885db429313e51 0.0s done
+#15 exporting attestation manifest sha256:61ec044d1b480dc06b6677b494f4b7db40118fc8c2a11232a6cdf1b1d7e70a32 0.0s done
+#15 exporting manifest list sha256:a9de4b55060e1fe9061e67865983dcb19cac9ece69ed14dc92f30fe6d7dbebd6
+#15 exporting manifest list sha256:a9de4b55060e1fe9061e67865983dcb19cac9ece69ed14dc92f30fe6d7dbebd6 done
 #15 naming to docker.io/library/yonexis-app:latest done
 #15 unpacking to docker.io/library/yonexis-app:latest 0.1s done
 #15 DONE 0.2s
 
 #16 [sandbox] exporting to image
 #16 exporting layers 0.1s done
-#16 exporting manifest sha256:0fd0f3c732751eb99aae1e70e64193860d0902c99f148129d09a228fc779212b done
-#16 exporting config sha256:f03648209c0c02f6524bd1fc2585002686a44bbcdf33613423b71b92b26c1f83 done
-#16 exporting attestation manifest sha256:8231f288801834d946e17f81aa397af07c9effee6545ddc0c0e183ff3587deec 0.0s done
-#16 exporting manifest list sha256:2c26017bf803416d6635ecbec282e4db4013d22a7d06d776ca16eb78aef6ac45 done
+#16 exporting manifest sha256:23d5c5acb24ec6e9d2e1cb87e57a499fdbc7078f1582e333a6c69e65957f2378 done
+#16 exporting config sha256:3d19945ff646ea3ea3cad40bb5a44f398119978d7c784d0a482693ab84d50857 done
+#16 exporting attestation manifest sha256:948a681ee05c4caf225abe95141380066071ee30cb10f0613775186d7d1c83a9 0.0s done
+#16 exporting manifest list sha256:f41d048c62816b5f23f640ea863faa7a22a4e897a80c0cb6707fa15bb5127379 0.0s done
 #16 naming to docker.io/library/yonexis-app:latest done
 #16 unpacking to docker.io/library/yonexis-app:latest 0.1s done
 #16 DONE 0.2s
 
-#17 [api] exporting to image
+#17 [scheduler] exporting to image
 #17 exporting layers 0.1s done
-#17 exporting manifest sha256:ec8e739e01809b3e54d9f72ebf4ac70321c8a159ec2bd5c6db0d8a296532b776 done
-#17 exporting config sha256:68e248e9e3ea31cca919a72a23c39651e4fa74f30c2b44811cd04a0c9d72d3f7 done
-#17 exporting attestation manifest sha256:65430fada489473f74ef34eedbd7b519ddca91d75a3fdc750f45e1ea3468903a 0.0s done
-#17 exporting manifest list sha256:4123f7527ffd1bb30e6b2429ce40b31358666f7e6cceaf20c3a36fdfcf12a63d 0.0s done
+#17 exporting manifest sha256:577b266711292def76f536cd3ee2cfe705b9724bead5515faea574632e240184 0.0s done
+#17 exporting config sha256:0f6e13c6e6584d8741f475aaa59bb83160ef91091959a3a8bf36d136ae8be40a done
+#17 exporting attestation manifest sha256:a64e3fe9b336943492798adc1c8fefd956b134706a8719d3dd0514d1a2be6a72 0.0s done
+#17 exporting manifest list sha256:2ce59924c8ba85fca8876250764c68640e3a57428c4f27970c2bc9d4c6f109fa 0.0s done
 #17 naming to docker.io/library/yonexis-app:latest done
 #17 unpacking to docker.io/library/yonexis-app:latest 0.1s done
 #17 DONE 0.2s
@@ -89,10 +89,10 @@ Ollama CLI: /usr/local/bin/ollama
 #18 [scheduler] resolving provenance for metadata file
 #18 DONE 0.0s
 
-#19 [api] resolving provenance for metadata file
+#19 [sandbox] resolving provenance for metadata file
 #19 DONE 0.0s
 
-#20 [sandbox] resolving provenance for metadata file
+#20 [api] resolving provenance for metadata file
 #20 DONE 0.0s
  Image yonexis-app:latest Built 
  Image yonexis-app:latest Built 
@@ -109,17 +109,17 @@ Ollama CLI: /usr/local/bin/ollama
  Container yonexis-api-1 Creating 
  Container yonexis-scheduler-1 Created 
  Container yonexis-api-1 Created 
- Container yonexis-db-1 Starting 
  Container yonexis-sandbox-1 Starting 
+ Container yonexis-db-1 Starting 
+ Container yonexis-sandbox-1 Started 
  Container yonexis-db-1 Started 
  Container yonexis-db-1 Waiting 
- Container yonexis-sandbox-1 Started 
  Container yonexis-db-1 Waiting 
  Container yonexis-db-1 Healthy 
  Container yonexis-api-1 Starting 
- Container yonexis-api-1 Started 
  Container yonexis-db-1 Healthy 
  Container yonexis-scheduler-1 Starting 
+ Container yonexis-api-1 Started 
  Container yonexis-scheduler-1 Started 
 
 [1;34m==> Waiting for the API[0m

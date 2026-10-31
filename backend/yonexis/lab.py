@@ -44,6 +44,79 @@ def _worker(names: list[str], data: dict, cfg_kwargs: dict) -> dict:
     return out
 
 
+def _worker_variants(name: str, data: dict, cfg_kwargs: dict, variants: list[dict]) -> list:
+    """Spawned process: one strategy with several parameter variants."""
+    from yonexis.backtest import BacktestConfig, run_backtest
+    from yonexis.sandbox.runner import parallel_workers
+    from yonexis.strategies import REGISTRY
+    os.environ["YONEXIS_PARALLEL"] = str(parallel_workers())
+    out = []
+    for v in variants:
+        try:
+            out.append(run_backtest(REGISTRY[name], data, v, BacktestConfig(**cfg_kwargs)).trades)
+        except Exception:
+            out.append(pd.DataFrame())
+    return out
+
+
+WINDOWS = [("09:15", "10:00"), ("10:00", "11:15"), ("11:15", "13:15"), ("13:15", "15:15")]
+
+
+def _filter(t: pd.DataFrame, syms, wins) -> pd.DataFrame:
+    if t.empty:
+        return t
+    hm = pd.to_datetime(t["entry_ts"]).dt.strftime("%H:%M")
+    ok = t["symbol"].isin(syms) & hm.apply(lambda x: any(a <= x < b for a, b in wins))
+    return t[ok]
+
+
+def _summ(t: pd.DataFrame) -> dict:
+    if t is None or t.empty:
+        return {"trades": 0, "net": 0.0, "avg": 0.0, "win": None}
+    return {"trades": int(len(t)), "net": round(float(t["net_pnl"].sum()), 2), "avg": round(float(t["net_pnl"].mean()), 2),
+            "win": round(float((t["net_pnl"] > 0).mean() * 100), 1)}
+
+
+def tune(name: str, default_trades: pd.DataFrame, variant_trades: list, variants: list[dict], cut: pd.Timestamp) -> dict:
+    """Choose target size, trades per day, which stocks and which times of day on the EARLIER 70% of history,
+    then judge the choice on the LATER 30% it never saw (honest: the choice is not fitted to the result)."""
+    best = None
+    for v, t in zip(variants, variant_trades):
+        if t is None or t.empty:
+            continue
+        et = pd.to_datetime(t["entry_ts"])
+        train = t[et < cut]
+        g = train.groupby("symbol")["net_pnl"].agg(["sum", "count"])
+        syms = sorted(g[(g["sum"] > 0) & (g["count"] >= 10)].index)
+        if not syms:
+            continue
+        tr_s = train[train["symbol"].isin(syms)]
+        hm = pd.to_datetime(tr_s["entry_ts"]).dt.strftime("%H:%M")
+        wins = [w for w in WINDOWS if tr_s[hm.apply(lambda x, w=w: w[0] <= x < w[1])]["net_pnl"].sum() > 0]
+        if not wins:
+            continue
+        score = float(_filter(train, syms, wins)["net_pnl"].sum())
+        if best is None or score > best["train_net"]:
+            best = {"params": v, "symbols": syms, "windows": wins, "train_net": score, "trades": t}
+    d_test = default_trades[pd.to_datetime(default_trades["entry_ts"]) >= cut] if not default_trades.empty else default_trades
+    out = {"strategy": name, "cut": str(cut.date()), "default_test": _summ(d_test)}
+    if best is None:
+        out.update({"recommended": False, "why": "no stock / time-of-day combination made money in the earlier 70% of history"})
+        return out
+    t = best["trades"]
+    test = _filter(t[pd.to_datetime(t["entry_ts"]) >= cut], best["symbols"], best["windows"])
+    train = _filter(t[pd.to_datetime(t["entry_ts"]) < cut], best["symbols"], best["windows"])
+    ts_, dt_ = _summ(test), out["default_test"]
+    rec = ts_["trades"] >= 20 and ts_["net"] > 0 and ts_["net"] > dt_["net"]
+    out.update({"params": {**best["params"], "_symbols": best["symbols"], "_windows": [list(w) for w in best["windows"]]},
+                "rr": best["params"].get("rr"), "max_trades_per_day": best["params"].get("max_trades_per_day"),
+                "symbols": best["symbols"], "windows": [f"{a}-{b}" for a, b in best["windows"]],
+                "tuned_train": _summ(train), "tuned_test": ts_, "recommended": bool(rec),
+                "why": ("made money on the later 30% it was not chosen on" if rec else
+                        "did not hold up on the later 30% of history (fewer than 20 trades, a loss, or no better than default)")})
+    return out
+
+
 def _load(symbols: list[str], start: str, progress) -> dict:
     data = {}
     for i, s in enumerate(symbols):
@@ -168,6 +241,31 @@ def run(engine, progress, start: str = "2024-01-01", include_pairs: bool = True)
             cx.execute(db.lab_trades.insert(), lab_rows[k:k + 5000])
     board.sort(key=lambda b: -(b.get("net_pnl") or -1e18))
 
+    # 3b ----------------------------------------------------------------- tuning: bigger targets, fewer trades, best stocks/times
+    tuning = []
+    days = sorted({d for df in data.values() for d in pd.to_datetime(df.index).normalize().unique()})
+    cut = days[int(len(days) * 0.7)] if len(days) > 20 else None
+    if cut is not None:
+        with ProcessPoolExecutor(max_workers=1, mp_context=mp.get_context("spawn")) as ex:
+            for i, n in enumerate([x for x in names if "error" not in results.get(x, {"error": 1})]):
+                base_rr = float(getattr(REGISTRY[n], "params", {}).get("rr", 2.0))
+                variants = [{"rr": base_rr, "max_trades_per_day": 1}, {"rr": max(3.0, base_rr), "max_trades_per_day": 1},
+                            {"rr": max(4.0, base_rr + 1), "max_trades_per_day": 1}]
+                progress(f"3/4 tuning {n} ({i + 1}/{len(names)}): targets {', '.join(str(v['rr']) for v in variants)}R, 1 trade/day, "
+                         f"best stocks and times chosen on history before {cut.date()}", {"done": i, "total": len(names)})
+                try:
+                    vt = ex.submit(_worker_variants, n, data, cfg_kwargs, variants).result(timeout=3600)
+                    tr = tune(n, results[n]["trades"], vt, variants, cut)
+                except Exception as e:
+                    tr = {"strategy": n, "recommended": False, "why": f"tuning failed: {e}"[:200]}
+                tuning.append(tr)
+                if tr.get("tuned_test"):
+                    progress(f"    {n}: target {tr['rr']}R, {len(tr['symbols'])} stocks, {', '.join(tr['windows'])} -> later 30%: "
+                             f"tuned Rs {tr['tuned_test']['net']:,.0f} ({tr['tuned_test']['trades']} trades) vs default Rs "
+                             f"{tr['default_test']['net']:,.0f} ({tr['default_test']['trades']}) {'RECOMMENDED' if tr['recommended'] else ''}", {})
+                else:
+                    progress(f"    {n}: {tr.get('why')}", {})
+
     # per-stock best strategy
     best_by_symbol = {}
     if lab_rows:
@@ -242,9 +340,10 @@ def run(engine, progress, start: str = "2024-01-01", include_pairs: bool = True)
 
     out = {"run_id": run_id, "finished": datetime.now().isoformat(timespec="seconds"), "secs": round(time.time() - t_start, 1),
            "start": start, "instruments": sorted(data), "candles": n_c, "leaderboard": board, "best_by_symbol": best_by_symbol,
-           "regimes": regimes, "pairs": results.get(pairs_mod.NAME, {}).get("pairs", []), "selector": model_info}
+           "regimes": regimes, "pairs": results.get(pairs_mod.NAME, {}).get("pairs", []), "selector": model_info,
+           "tuning": tuning}
     db.set_setting("lab_last", {k: out[k] for k in ("run_id", "finished", "start", "instruments", "candles", "leaderboard",
-                                                    "best_by_symbol", "pairs", "selector")})
+                                                    "best_by_symbol", "pairs", "selector", "tuning")})
     db.log("admin", "strategy_lab", {"run_id": run_id, "strategies": len(board), "candidates": int(len(ds))})
     return out
 

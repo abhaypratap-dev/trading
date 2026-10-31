@@ -174,16 +174,33 @@ def run_backtest(
     return BacktestResult(tdf, daily, compute_metrics(tdf, daily), signals, pend)
 
 
+def _in_windows(ts, windows) -> bool:
+    t = pd.Timestamp(ts).strftime("%H:%M")
+    return any(a <= t < b for a, b in windows)
+
+
 def _run_symbols(strategy_cls, data, params, cfg, exec_bars):
     trades: list[dict] = []
     signals: list[dict] = []
     pend: list[dict] = []
+    params = dict(params or {})
+    # tuning filters (Strategy Lab "tuned settings"): only these stocks, only entries inside these time windows
+    only_syms = {x.upper() for x in (params.pop("_symbols", None) or [])}
+    windows = [tuple(w) for w in (params.pop("_windows", None) or [])]
+    sq_off = params.pop("_square_off", None)          # admin's square-off time (default: the strategy's 15:15)
+    if sq_off:
+        from datetime import time as _time
+        sq_off = _time(*map(int, str(sq_off).split(":")))
 
     for symbol, raw in data.items():
+        if only_syms and symbol.upper() not in only_syms:
+            continue
         df = normalize_candles(raw)
         if df.empty:
             continue
-        strat = strategy_cls(**(params or {}))
+        strat = strategy_cls(**params)
+        if sq_off:
+            strat.square_off = sq_off
         try:
             ind_arrays = as_arrays(strat.indicators(df))          # computed once per symbol, read via ctx.ind
         except Exception as e:                                     # a broken indicator must not kill the whole run
@@ -224,6 +241,8 @@ def _run_symbols(strategy_cls, data, params, cfg, exec_bars):
 
         def open_pos(sig: Signal, sig_ts, px: float, ts) -> bool:
             nonlocal pos
+            if windows and not _in_windows(ts, windows):
+                return False
             fill = _slip(px, sig.side, cfg.slippage_bps, entering=True)
             qty = int(cfg.lots_per_trade) * int(lot) if fut else math.floor(cfg.capital_per_trade / fill)
             if qty <= 0:

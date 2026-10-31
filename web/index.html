@@ -29,8 +29,10 @@
     </div>
   </div>
   <nav id="tabs" aria-label="Sections">
+    <button type="button" data-tab="zone" class="nav-zone">YONEXIS AI</button>
     <button type="button" data-tab="live" class="on" aria-current="page">Live</button>
     <button type="button" data-tab="wallet">Paper Wallet</button>
+    <button type="button" data-tab="lists">Watchlists</button>
     <span class="nav-sep" aria-hidden="true"></span>
     <button type="button" data-tab="backtest">Backtest</button>
     <button type="button" data-tab="models">Strategies</button>
@@ -46,6 +48,71 @@
 <div id="toasts" role="status" aria-live="polite"></div>
 
 <main id="main">
+<!-- ============================== YONEXIS AI DASHBOARD (zone only) ============================== -->
+<section id="tab-zone" class="tab" aria-label="YONEXIS AI dashboard">
+  <div class="panel">
+    <div class="panel-h"><h2>YONEXIS AI · First Red Candle Zone</h2><span class="t3 xs">5-minute candles only · entries and exits exactly at the zone high / low</span></div>
+    <p class="panel-sub">Test your zone rules on any day or date range. Nothing is written to the paper wallet: this is a pure replay to see the P&amp;L.</p>
+    <div class="form zform">
+      <label class="w-wide">Symbols <input id="zn-symbols" value=""></label>
+      <div class="w-wide"><div class="seg" id="zn-mode" role="radiogroup" aria-label="Period">
+        <button type="button" data-m="day" class="on" role="radio" aria-checked="true">Single day</button><button type="button" data-m="range" role="radio" aria-checked="false">Backtest</button><button type="button" data-m="ai" role="radio" aria-checked="false">AI backtest</button></div></div>
+      <label>Day / from <input type="date" id="zn-start"></label>
+      <label id="zn-end-l" hidden>To <input type="date" id="zn-end"></label>
+      <div class="w-wide zcfg-wrap"><div class="ts-h">Configurations <span class="t3 xs">each row is tested on the same data; add several to compare them side by side</span></div>
+        <div class="tscroll"><table class="tbl" id="zn-cfgs"><thead><tr><th>#</th><th>Max entries / day</th><th>Target multiplier</th><th title="Ticked: a wick through the zone is enough (current system). Unticked: entry and stop only when a 5-minute candle opens or closes outside the zone.">Spike</th><th>Lots per entry</th><th>Target per lot (× multiplier)</th><th></th></tr></thead><tbody></tbody></table></div>
+        <div class="row"><button type="button" class="sm" id="zn-add">+ add configuration</button><span class="t3 xs">Target = entry price + range × target (SELL: −). <b>Zone</b>: range = zone candle high − low (zone range 10, target 1.5 → 15 beyond the entry). <b>IZ</b>: range = high − low of the candle in which the entry happened (set when that candle closes). <b>Spike</b> ticked = a wick through the zone is enough; unticked = entry and stop only when a candle opens or closes outside the zone (at that price). Several lots share the stop.</span></div></div>
+      <div class="w-wide" id="zn-ai" hidden><div class="ts-h">AI backtest <span class="t3 xs">futures only · the strategy is not changed: every combination of these settings is replayed on every future, then the best configuration and the best set of 5, 10 … 40 futures are picked</span></div>
+        <div class="form">
+          <label>Lot 1 targets (×) <input id="za-l1" class="mono" value="1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5"><small class="t3">from 1.5 upwards</small></label>
+          <label>Lot 2 targets (×) <input id="za-l2" class="mono" value="20, 18, 16, 14, 12, 10, 8, 6"><small class="t3">from 20 downwards</small></label>
+          <label>Max entries / day <input id="za-en" class="mono" value="1, 2"></label>
+          <label>Symbol set sizes <input id="za-sz" class="mono" value="5, 10, 15, 20, 25, 30, 35, 40"></label>
+          <label>Pick on first (%) <input id="za-tr" type="number" min="30" max="90" step="5" value="70"><small class="t3">the rest checks the pick</small></label>
+          <div><div class="t3 xs">Target multiplier</div><label class="chk"><input type="checkbox" id="za-bz" checked> Zone</label> <label class="chk"><input type="checkbox" id="za-bi" checked> IZ</label></div>
+          <div><div class="t3 xs">Spike</div><label class="chk"><input type="checkbox" id="za-s1" checked> on</label> <label class="chk"><input type="checkbox" id="za-s0" checked> off</label></div>
+        </div>
+        <p class="t3 xs" id="za-count"></p></div>
+      <label>No new entries after <input type="time" id="zn-cutoff" value="14:30"></label>
+      <label>Square-off time <input type="time" id="zn-sq" value="15:15" min="09:20" max="15:30"><small class="t3">inside a candle (e.g. 15:28) = that candle's close</small></label>
+      <label class="chk" title="Leaves out every symbol-day with 8 or more flat no-trade 5-minute candles or any missing candle (incomplete data)."><input type="checkbox" id="zn-refined"> refined data (skip days with flat / missing candles)</label>
+      <label>Capital per lot, stocks (₹) <input type="number" id="zn-capital" min="1000" step="1000" value="100000"><small class="t3">futures: 1 lot = exchange lot size</small></label>
+      <label class="chk"><input type="checkbox" id="zn-short" checked> allow SELL (zone low)</label>
+      <label class="chk"><input type="checkbox" id="zn-costs" checked> include brokerage, taxes &amp; charges</label>
+      <label>Skip zones wider than (%) <input type="number" id="zn-maxz" min="0" step="0.1" value="" placeholder="no limit"></label>
+    </div>
+    <div class="row"><button type="button" class="primary" id="zn-go">Run</button><span id="zn-msg" class="t3"></span></div>
+    <div class="progress" id="zn-bar" hidden><div style="width:0%"></div></div>
+    <details class="lab-how"><summary>The rules, exactly</summary>
+      <ol class="t2 xs">
+        <li><b>Zone</b> = the first red 5-minute candle of the day (from 09:15): its high and low.</li>
+        <li><b>Entry</b> exactly at the zone levels: price rises to the zone high from below → BUY at the zone high; falls to the zone low from above → SELL at the zone low.</li>
+        <li><b>Target</b> = entry price + range × multiplier for a BUY (SELL: entry − range × multiplier). <b>Zone</b>: range = the zone candle's high − low (zone 100–110, ×1.5 → BUY at 110 targets 125, SELL at 100 targets 85). <b>IZ</b>: range = the entry candle's high − low, set when that candle closes.</li>
+        <li><b>Spike</b> unticked: a wick through the zone is ignored. BUY only when a candle opens above the zone high (at that open) or closes above it (at that close); SELL the same below the zone low. Stops work the same way (the candle must open or close beyond the opposite edge); targets still fill when touched.</li>
+        <li><b>Stop</b> = the opposite zone edge. A stopped BUY is at the zone low, which is the SELL entry, so the next entry starts there at once (relay); after a target, the next entry waits for a fresh break of the zone.</li>
+        <li><b>Max entries per day</b>: with 2 → enter, exit, enter, exit, then done for the day. Anything still open at the square-off time (15:15 unless you change it) is closed at that candle's open; a time inside a candle (15:28) closes at that candle's close.</li>
+        <li><b>Refined data</b>: a symbol's day with 8 or more flat no-trade candles, or any missing candle, is left out of the test.</li>
+        <li>With 5-minute candles the order of prices inside a candle is unknown, so: in the entry candle only the stop can be hit; a candle reaching both stop and target counts as the stop; if both zone edges are touched before entering, the edge nearer the open goes first.</li>
+      </ol></details>
+  </div>
+  <div id="zn-out"></div>
+</section>
+
+<!-- ============================== WATCHLISTS ============================== -->
+<section id="tab-lists" class="tab" aria-label="Watchlists">
+  <div class="grid-lists">
+    <div class="panel"><div class="panel-h"><h2>Your watchlists</h2><button type="button" class="sm primary" id="nl-new">+ New</button></div>
+      <p class="panel-sub">Named lists of stocks and futures. Pick them in Backtest, YONEXIS AI and Paper Wallet symbol fields ("+ list").</p>
+      <div id="nl-list" class="nl-list"></div></div>
+    <div class="panel" id="nl-edit"><div class="panel-h"><h2 id="nl-title">New watchlist</h2><span class="t3 xs" id="nl-count"></span></div>
+      <div class="form">
+        <label>Name <input id="nl-name" maxlength="40" placeholder="e.g. Banks, F&amp;O momentum"></label>
+        <label class="w-wide">Stocks and futures <input id="nl-symbols" value=""></label>
+      </div>
+      <div class="row"><button type="button" class="primary" id="nl-save">Save</button><button type="button" id="nl-del" class="danger" hidden>Delete</button><span id="nl-msg" class="t3 xs"></span></div></div>
+  </div>
+</section>
+
 <!-- ============================== LIVE ============================== -->
 <section id="tab-live" class="tab on" aria-label="Live">
   <div class="live-grid">
@@ -169,7 +236,7 @@
         <div class="row tight"><label class="chk"><input type="checkbox" id="ts-seg-eq" checked> Stocks <span class="t3 xs" id="ts-n-eq"></span></label>
           <label class="chk"><input type="checkbox" id="ts-seg-fut" checked> Futures <span class="t3 xs" id="ts-n-fut"></span></label>
           <label class="chk xs" title="All NSE futures (stock + index). Picked ones join the watchlist when you rebuild."><input type="checkbox" id="ts-allfut"> all NSE futures</label>
-          <input id="ts-filter" class="sm" placeholder="Filter…" style="max-width:140px" aria-label="Filter instruments"><button type="button" class="sm" id="ts-all">Select all</button><button type="button" class="sm" id="ts-none">None</button></div>
+          <input id="ts-filter" class="sm" placeholder="Filter…" style="max-width:140px" aria-label="Filter instruments"><button type="button" class="sm" id="ts-all">Select all</button><button type="button" class="sm" id="ts-none">None</button><select class="sm" id="ts-list" aria-label="Load a watchlist"><option value="">+ watchlist…</option></select></div>
         <div class="ts-list" id="ts-list"></div></div>
       <div><div class="ts-h">2. Logic</div>
         <div class="lp" id="ts-logic" role="radiogroup" aria-label="Logic"></div>
@@ -187,8 +254,9 @@
   <div class="panel"><div class="panel-h"><h2>Demo money &amp; margins</h2></div>
     <div class="form"><label>Amount (Rs) <input id="w-amt" type="number" value="1000000" step="10000"></label>
       <label title="Money blocked for a stock trade = trade value / leverage. Indian brokers give up to 5x for intraday (MIS).">Stock intraday leverage (x) <input id="w-lev" type="number" min="1" max="10" step="0.5"></label>
-      <label title="Money blocked for a futures trade, as % of the contract value (exchange SPAN + exposure is usually 12-20%).">Futures margin (%) <input id="w-futm" type="number" min="1" max="100" step="1"></label></div>
-    <div class="row"><button type="button" id="w-deposit">Add demo money</button><button type="button" id="w-margin">Save margin settings</button><span id="w-margin-msg" class="t3 xs"></span></div>
+      <label title="Money blocked for a futures trade, as % of the contract value (exchange SPAN + exposure is usually 12-20%).">Futures margin (%) <input id="w-futm" type="number" min="1" max="100" step="1"></label>
+      <label title="Open paper positions are closed at this time. Also used by Rebuild trades and the Backtest tab.">Square-off time <input id="w-sq" type="time" min="09:20" max="15:30"></label></div>
+    <div class="row"><button type="button" id="w-deposit">Add demo money</button><button type="button" id="w-margin">Save margin settings</button><button type="button" id="w-sq-save">Save square-off time</button><span id="w-margin-msg" class="t3 xs"></span></div>
     <p class="t3 xs">Leverage: money blocked for a stock trade = value ÷ leverage. Futures margin: % of contract value blocked. Every change is kept in the ledger.</p></div>
 
   <details class="panel danger-zone" id="w-danger">
@@ -205,6 +273,40 @@
 
 <!-- ============================== BACKTEST ============================== -->
 <section id="tab-backtest" class="tab" aria-label="Backtest">
+  <div class="panel">
+    <div class="panel-h"><h2>Backtest a strategy</h2>
+      <span class="seg" id="bt-mode" role="radiogroup" aria-label="Mode">
+        <label class="seg-r"><input type="radio" name="bt-mode" value="quick" checked> Quick</label>
+        <label class="seg-r"><input type="radio" name="bt-mode" value="full"> Full evaluation</label>
+      </span></div>
+    <p class="panel-sub" id="bt-mode-help">Quick: one pass over the period with the strategy's settings — results in seconds.</p>
+    <div class="form">
+      <label>Strategy <select id="bt-strategy"></select></label>
+      <label class="w-wide">Symbols <input id="bt-symbols" value="RELIANCE,HDFCBANK,INFY"></label>
+      <label>Interval <select id="bt-interval"><option>1m</option><option>3m</option><option selected>5m</option><option>10m</option><option>15m</option><option>30m</option><option>60m</option></select></label>
+      <label>From <input id="bt-start" type="date" value="2024-01-01"></label>
+      <label>To <input id="bt-end" type="date" value="2025-06-30"></label>
+      <label>Data <select id="bt-source"><option value="db">Stored data</option><option value="simulated">Simulated (test only)</option></select></label>
+      <label>Square-off time <input id="bt-sq" type="time" min="09:20" max="15:30" placeholder="default"><small class="t3">empty = your Paper Wallet setting</small></label>
+      <label class="chk" title="Leaves out every symbol-day with 10% or more flat no-trade candles or any missing candle (incomplete data)."><input type="checkbox" id="bt-refined"> refined data (skip days with flat / missing candles)</label>
+    </div>
+    <div class="form form-help">
+      <label class="w-wide">Params (JSON) <input id="bt-params" value="{}" class="mono">
+        <span class="help">Overrides the strategy's settings for this run only. <code>{}</code> = saved settings. e.g. <code>{"rr": 2.5, "entry_mode": "close"}</code> = target 2.5× risk, enter on candle close.</span></label>
+      <label class="w-wide full-only">Param grid for walk-forward (JSON) <input id="bt-space" value='{"rr":[1.5,2,2.5]}' class="mono">
+        <span class="help">Values tried in each training window; the best is tested on the next unseen window. <code>{"rr":[1.5,2,2.5]}</code> = 3 variants. More variants = stricter deflated-Sharpe check and a longer run.</span></label>
+      <label class="full-only">Baseline net P&amp;L (Rs) <input id="bt-baseline" type="number" placeholder="optional">
+        <span class="help">Your best known result. Adds the check "beats baseline on the hold-out" (last 20% of data). Empty = no check.</span></label>
+    </div>
+    <div class="row"><button type="button" id="bt-quick" class="primary">Run quick backtest</button><button type="button" id="bt-full" class="primary" hidden>Run full evaluation</button></div>
+  </div>
+  <div id="bt-out"></div>
+  <div class="panel"><div class="panel-h"><h2>Backtest history</h2><span class="t3 xs">every quick and full backtest you ran · open a full one to see its report again</span></div>
+    <div class="tscroll tall"><table class="tbl" id="bts"><thead><tr><th class="r">#</th><th>Kind</th><th>Strategy</th><th>Verdict</th><th class="r">Trades</th><th class="r">Net P&amp;L</th><th class="r">Win %</th><th class="r">PF</th><th class="r">Sharpe</th><th></th></tr></thead><tbody></tbody></table></div></div>
+</section>
+
+<!-- ============================== AI BUILDER ============================== -->
+<section id="tab-builder" class="tab" aria-label="AI Builder">
   <div class="panel" id="lab-panel">
     <div class="panel-h"><h2>Strategy Lab</h2><span class="t3 xs" id="lab-when"></span></div>
     <p class="panel-sub">Backtests every strategy in the library on all stored history, ranks them, finds the best one per stock and trains the AI picker that chooses which strategy to trust in which situation.</p>
@@ -227,43 +329,14 @@
     </details>
   </div>
   <div id="lab-out"></div>
-  <div class="panel">
-    <div class="panel-h"><h2>Backtest a strategy</h2>
-      <span class="seg" id="bt-mode" role="radiogroup" aria-label="Mode">
-        <label class="seg-r"><input type="radio" name="bt-mode" value="quick" checked> Quick</label>
-        <label class="seg-r"><input type="radio" name="bt-mode" value="full"> Full evaluation</label>
-      </span></div>
-    <p class="panel-sub" id="bt-mode-help">Quick: one pass over the period with the strategy's settings — results in seconds.</p>
-    <div class="form">
-      <label>Strategy <select id="bt-strategy"></select></label>
-      <label class="w-wide">Symbols <input id="bt-symbols" value="RELIANCE,HDFCBANK,INFY"></label>
-      <label>Interval <select id="bt-interval"><option>1m</option><option>3m</option><option selected>5m</option><option>10m</option><option>15m</option><option>30m</option><option>60m</option></select></label>
-      <label>From <input id="bt-start" type="date" value="2024-01-01"></label>
-      <label>To <input id="bt-end" type="date" value="2025-06-30"></label>
-      <label>Data <select id="bt-source"><option value="db">Stored data</option><option value="simulated">Simulated (test only)</option></select></label>
-    </div>
-    <div class="form form-help">
-      <label class="w-wide">Params (JSON) <input id="bt-params" value="{}" class="mono">
-        <span class="help">Overrides the strategy's settings for this run only. <code>{}</code> = saved settings. e.g. <code>{"rr": 2.5, "entry_mode": "close"}</code> = target 2.5× risk, enter on candle close.</span></label>
-      <label class="w-wide full-only">Param grid for walk-forward (JSON) <input id="bt-space" value='{"rr":[1.5,2,2.5]}' class="mono">
-        <span class="help">Values tried in each training window; the best is tested on the next unseen window. <code>{"rr":[1.5,2,2.5]}</code> = 3 variants. More variants = stricter deflated-Sharpe check and a longer run.</span></label>
-      <label class="full-only">Baseline net P&amp;L (Rs) <input id="bt-baseline" type="number" placeholder="optional">
-        <span class="help">Your best known result. Adds the check "beats baseline on the hold-out" (last 20% of data). Empty = no check.</span></label>
-    </div>
-    <div class="row"><button type="button" id="bt-quick" class="primary">Run quick backtest</button><button type="button" id="bt-full" class="primary" hidden>Run full evaluation</button></div>
-  </div>
-  <div id="bt-out"></div>
-</section>
-
-<!-- ============================== AI BUILDER ============================== -->
-<section id="tab-builder" class="tab" aria-label="AI Builder">
-  <div class="panel">
+<div class="panel llm-off-note"><p class="t2">The AI writing features (describe a strategy, rule card, agents) need the local AI model, which is not part of this cloud deployment. Use them on your local YONEXIS (dev branch).</p></div>
+  <div class="panel llm-only">
     <div class="panel-h"><h2>1 · Explain your idea</h2></div>
     <p class="panel-sub">Describe entries, filters, stop and target in plain words. The spec agent turns it into a rule card you can check.</p>
     <textarea id="ai-prompt" rows="5" placeholder="e.g. Buy when price closes above the first red candle zone, only if Nifty is green and volume is 1.5x the 20-candle average. SL at zone low, target 2x risk. No trades after 2:30 pm."></textarea>
     <div class="row"><button type="button" id="ai-spec" class="primary">Create rule card</button><span id="ai-spec-status" class="t2"></span></div>
   </div>
-  <div class="panel" id="ai-card-panel" hidden>
+  <div class="panel llm-only" id="ai-card-panel" hidden>
     <div class="panel-h"><h2>2 · Check and edit the rule card</h2></div>
     <div id="ai-questions"></div>
     <textarea id="ai-card" rows="16" class="mono" aria-label="Rule card JSON"></textarea>
@@ -276,13 +349,14 @@
     </div>
     <div class="row"><button type="button" id="ai-build" class="primary">Confirm &amp; build with agents</button></div>
   </div>
-  <div class="panel" id="ai-progress" hidden><div class="panel-h"><h2>3 · Agents at work</h2></div><div id="ai-log" class="log"></div></div>
+  <div class="panel llm-only" id="ai-progress" hidden><div class="panel-h"><h2>3 · Agents at work</h2></div><div id="ai-log" class="log"></div></div>
   <div id="ai-out"></div>
 </section>
 
 <!-- ============================== IMPORT ============================== -->
 <section id="tab-import" class="tab" aria-label="Import">
-  <div class="panel">
+<div class="panel llm-off-note"><p class="t2">The AI writing features (script converter and reviewer) need the local AI model, which is not part of this cloud deployment. Use them on your local YONEXIS (dev branch).</p></div>
+  <div class="panel llm-only">
     <div class="panel-h"><h2>Convert an existing script</h2></div>
     <p class="panel-sub">Pine Script, AFL, Python or Excel rules — the converter agent rewrites it as a YONEXIS strategy and a reviewer checks it.</p>
     <div class="form"><label>Language <select id="imp-lang"><option>auto</option><option>pine</option><option>afl</option><option>python</option><option>excel-rules</option></select></label>
@@ -324,6 +398,41 @@
     <div class="form"><label>From <input id="dh-start" type="date" value="2024-01-01"></label><label>Interval <select id="dh-int"><option>5m</option><option>1m</option><option>15m</option><option>1d</option></select></label></div>
     <div class="row"><button type="button" id="dh-go" class="primary">Download</button><span id="dh-msg" class="t2"></span></div>
     <div class="progress" id="dh-bar" hidden><div style="width:0%"></div></div></div>
+  <div class="panel" id="dc-panel"><div class="panel-h"><h2>Data check</h2><span class="t3 xs" id="dc-last"></span></div>
+    <p class="panel-sub">Make sure backtests run on complete, consistent candles: see what is loaded, choose what to verify, find gaps, then refetch only what is missing.</p>
+    <div class="ts-h">1. What is loaded</div>
+    <div class="tscroll"><table class="tbl" id="dc-sum"><thead><tr><th>Interval</th><th class="r">Symbols</th><th class="r">Stocks</th><th class="r">Futures</th><th class="r">Candles</th><th>From</th><th>To</th></tr></thead><tbody></tbody></table></div>
+    <div class="ts-h" style="margin-top:12px">2. What to verify</div>
+    <div class="form">
+      <label class="w-wide">Symbols <input id="dc-symbols" value=""><small class="t3">leave empty to check everything stored for the chosen intervals</small></label>
+      <label class="w-wide">Intervals <input id="dc-interval" value="5m" hidden><span class="iv-pick" data-for="dc-interval"></span></label>
+      <label>From <input type="date" id="dc-start" value="2024-01-01"></label>
+      <label>To <input type="date" id="dc-end"></label>
+    </div>
+    <div class="row"><button type="button" class="primary" id="dc-go">Verify</button><span id="dc-msg" class="t3"></span></div>
+    <div class="progress" id="dc-bar" hidden><div style="width:0%"></div></div>
+    <div id="dc-out"></div></div>
+  <div class="panel" id="fc-panel"><div class="panel-h"><h2>Continuous futures history</h2><span class="t3 xs" id="fc-plan">Upstox plan not checked</span></div>
+    <p class="panel-sub">Rebuilds each futures symbol's history from the contract that was the near month at the time (expired contracts, needs Upstox Plus), instead of the current contract's thin far-month past. Prices are as traded; at each expiry the series rolls to the next contract.</p>
+    <div class="row"><button type="button" id="fc-check">Check Upstox plan</button><span id="fc-check-msg" class="t3 xs"></span></div>
+    <div class="form">
+      <label class="w-wide">Futures <input id="fc-symbols" value=""><small class="t3">empty = every future in the live watchlist</small></label>
+      <label class="w-wide">Intervals <input id="fc-interval" value="5m" hidden><span class="iv-pick" data-for="fc-interval"></span></label>
+      <label>From <input type="date" id="fc-start" value="2024-01-01"></label>
+      <label>Roll days before expiry <input type="number" id="fc-roll" min="0" max="10" value="0"><small class="t3">0 = switch on the day after expiry</small></label>
+    </div>
+    <div class="row"><button type="button" class="primary" id="fc-go">Build continuous history</button><span id="fc-msg" class="t3"></span></div>
+    <div class="progress" id="fc-bar" hidden><div style="width:0%"></div></div>
+    <div id="fc-out"></div></div>
+  <div class="panel"><div class="panel-h"><h2>Download stored data</h2></div>
+    <p class="panel-sub">Export candles already in your database as CSV (one file) or Excel (one sheet per symbol and interval). Click a row in the table below to pick it.</p>
+    <div class="form">
+      <label class="w-wide">Symbols <input id="ex-symbols" value=""></label>
+      <label class="w-wide">Intervals <input id="ex-interval" value="5m" hidden><span class="iv-pick" data-for="ex-interval"></span></label>
+      <label>From <input id="ex-start" type="date"></label>
+      <label>To <input id="ex-end" type="date"></label>
+    </div>
+    <div class="row"><button type="button" id="ex-csv" class="primary">Download CSV</button><button type="button" id="ex-xlsx">Download Excel</button><span id="ex-msg" class="t3 xs">leave dates empty for everything stored</span></div></div>
   <div class="panel"><div class="panel-h"><h2>Stored data</h2></div><div class="tscroll tall"><table class="tbl" id="inv"><thead><tr><th>Symbol</th><th>Interval</th><th class="r">Candles</th><th>From</th><th>To</th><th>Source</th></tr></thead><tbody></tbody></table></div></div>
   <div class="grid2">
   <div class="panel">
@@ -332,7 +441,7 @@
     <div class="form">
       <label>Source <select id="df-source"><option value="upstox">Upstox</option><option value="yahoo">Yahoo Finance</option><option value="kite">Zerodha Kite</option><option value="simulated">Simulated</option></select></label>
       <label class="w-wide">Symbols <input id="df-symbols" value="RELIANCE,HDFCBANK,INFY"></label>
-      <label>Interval <input id="df-interval" value="5m" size="4"></label>
+      <label class="w-wide">Intervals <input id="df-interval" value="5m" hidden><span class="iv-pick" data-for="df-interval"></span></label>
       <label>From <input id="df-start" type="date"></label>
       <label>To <input id="df-end" type="date"></label>
     </div>
@@ -376,8 +485,6 @@
   <div class="panel"><div class="panel-h"><h2>Models</h2></div>
     <p class="panel-sub">New models start in shadow; promote to champion to use them live.</p>
     <div class="tscroll"><table class="tbl" id="models"><thead><tr><th>Kind</th><th>Version</th><th>Strategy</th><th class="r">OOS AUC</th><th class="r">Hit rate top 40% / all</th><th>Status</th><th></th></tr></thead><tbody></tbody></table></div></div>
-  <div class="panel"><div class="panel-h"><h2>Backtest history</h2></div>
-    <div class="tscroll tall"><table class="tbl" id="bts"><thead><tr><th class="r">#</th><th>Kind</th><th>Strategy</th><th>Verdict</th><th class="r">Trades</th><th class="r">Net P&amp;L</th><th class="r">Win %</th><th class="r">PF</th><th class="r">Sharpe</th><th></th></tr></thead><tbody></tbody></table></div></div>
 </section>
 
 <!-- ============================== FEEDBACK ============================== -->
@@ -386,7 +493,7 @@
   <div class="panel"><div class="panel-h"><h2>Where the admin's judgment helps</h2></div>
     <p class="panel-sub">Grouped by remark tag. Add remarks when you review calls on the Live tab.</p>
     <div class="tscroll"><table class="tbl" id="fb-tags"><thead><tr><th>Tag</th><th class="r">Calls</th><th class="r">Rejected</th><th class="r">Admin right %</th></tr></thead><tbody></tbody></table></div></div>
-  <div class="panel"><div class="panel-h"><h2>Suggestions from your feedback</h2></div><div class="row"><button type="button" id="fb-suggest" class="primary">Ask the Feedback analyst</button></div><div id="fb-sugg"></div></div>
+  <div class="panel llm-only"><div class="panel-h"><h2>Suggestions from your feedback</h2></div><div class="row"><button type="button" id="fb-suggest" class="primary">Ask the Feedback analyst</button></div><div id="fb-sugg"></div></div>
 </section>
 
 <!-- ============================== SYSTEM ============================== -->
@@ -464,6 +571,8 @@
 <div class="sheet" id="more-sheet" hidden role="dialog" aria-label="More sections">
   <div class="sheet-in">
     <div class="sheet-h"><b>More</b><button type="button" class="x" data-close aria-label="Close">×</button></div>
+    <button type="button" data-go="zone">YONEXIS AI (zone)</button>
+    <button type="button" data-go="lists">Watchlists</button>
     <button type="button" data-go="models">Strategies</button>
     <button type="button" data-go="builder">AI Builder</button>
     <button type="button" data-go="import">Import</button>
@@ -499,6 +608,7 @@
     <div class="tc-body">
       <div class="ind-legend" id="tc-legend"></div>
       <div id="tc-chart"></div>
+      <div id="tc-calc"></div>
       <div class="tscroll"><table class="tbl" id="tc-tbl"><thead><tr><th>Side</th><th>Entry</th><th class="r">Price</th><th>Exit</th><th class="r">Price</th><th>Why</th><th class="r">Stop</th><th class="r">Target</th><th class="r">P&amp;L</th></tr></thead><tbody></tbody></table></div>
     </div>
   </div>

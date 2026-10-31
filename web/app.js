@@ -64,7 +64,7 @@ function dayLabel(ymd) {
 // ---------------------------------------------------------------- plain-language reasons
 const RELAY_TIP = "Relay: price crossed the whole zone, so this trade was closed at the opposite zone edge and the opposite side was opened there.";
 const REASONS = { target: "Target hit", target_gap: "Target (gap)", stop_loss: "Stop hit", sl: "Stop hit", sl_gap: "Stop hit", reversed: "Reversed at zone edge",
-  square_off: "15:15 square-off", manual: "Closed manually", eod: "End of day", void: "Void", taken: "Traded (paper)", closed: "Closed", open: "Open" };
+  square_off: "Square-off", manual: "Closed manually", eod: "End of day", void: "Void", taken: "Traded (paper)", closed: "Closed", open: "Open" };
 const PREFIXES = [["blocked", "Blocked"], ["not traded", "Not traded"], ["void", "Void"], ["skipped", "Skipped"], ["no trade", "No trade"], ["taken", "Traded"], ["waiting", "Waiting"]];
 function reasonText(raw) {
   const s = String(raw ?? "").trim(); if (!s) return "";
@@ -94,8 +94,8 @@ function reasonHTML(raw, tone = true) {
 }
 
 // ---------------------------------------------------------------- tabs + navigation
-const TAB_ORDER = ["live", "wallet", "backtest", "models", "builder", "import", "feedback", "data", "risk"];
-const MORE_TABS = ["models", "builder", "import", "feedback", "data"];
+const TAB_ORDER = ["zone", "live", "wallet", "lists", "backtest", "models", "builder", "import", "feedback", "data", "risk"];
+const MORE_TABS = ["zone", "lists", "models", "builder", "import", "feedback", "data"];
 let curTab = "live";
 function showTab(name) {
   if (!TAB_ORDER.includes(name)) return;
@@ -106,7 +106,7 @@ function showTab(name) {
   $("#bnav-more").classList.toggle("on", MORE_TABS.includes(name));
   $$("#more-sheet [data-go]").forEach(b => b.classList.toggle("on", b.dataset.go === name));
   closeOverlays();
-  const loaders = { wallet: () => { loadWallet(); typeof loadScope === "function" && loadScope(); }, models: loadModelsTab, data: () => { loadInventory(); loadUpstox(); }, feedback: loadFeedback, risk: loadRisk, backtest: () => { loadStrategySelects(); loadLab(); }, import: loadStrategySelects };
+  const loaders = { wallet: () => { loadWallet(); typeof loadScope === "function" && loadScope(); }, models: loadModelsTab, data: () => { loadInventory(); loadUpstox(); dcSummary(); }, feedback: loadFeedback, risk: loadRisk, backtest: () => { loadStrategySelects(); loadBtHistory(); }, builder: () => { loadLab(); }, import: loadStrategySelects };
   loaders[name]?.();
   if (changed) window.scrollTo(0, 0);
   setTimeout(markScrolls, 50);
@@ -148,8 +148,9 @@ function renderHeader() {
     $("#hc-feed-dot").className = "dot " + fdot;
     $("#hc-feed-t").textContent = `${h.connector}${f ? " · " + f.status.replaceAll("_", " ") : ""}`;
     $("#hc-feed").title = `Feed: ${f ? f.status + (f.error ? ": " + f.error : "") : h.connector} — open Data`;
-    $("#hc-ai-dot").className = "dot " + (h.llm.ok ? "g" : "r");
-    $("#hc-ai-t").textContent = `AI ${h.llm.ok ? "ready" : "offline"}`;
+    document.body.classList.toggle("no-llm", !!h.llm.disabled);
+    $("#hc-ai-dot").className = "dot " + (h.llm.ok ? "g" : h.llm.disabled ? "a" : "r");
+    $("#hc-ai-t").textContent = h.llm.disabled ? "AI writer: local only" : `AI ${h.llm.ok ? "ready" : "offline"}`;
     $("#hc-ai").title = `AI model ${h.llm.model || ""} — open System`;
   }
 }
@@ -367,7 +368,7 @@ async function loadWatchNote() {
   try {
     const w = await api("/api/watchlist");
     window._watch = w.symbols;
-    $("#wl-note").innerHTML = `${w.symbols.length}/${w.max} symbols · calls come from: ${w.strategies_making_calls.length ? w.strategies_making_calls.map(x => esc(x.replaceAll("_", " "))).join(", ") : '<span class="amber">no strategy in paper status</span>'}`;
+    $("#wl-note").innerHTML = `${w.symbols.length}/${w.max} symbols · live calls: ${w.strategies_making_calls.length ? w.strategies_making_calls.map(x => esc(lname(x))).join(", ") : '<span class="amber">no strategy in paper status</span>'}${w.scope ? ` on ${w.scope.symbols || "all"} selected instruments <span class="t3" title="Set by your last 'Rebuild today' in Paper Wallet. Pick another logic there to change it.">(from Paper Wallet test)</span>` : ` <span class="t3" title="Every strategy whose status is paper makes calls (Strategies tab)">(strategies in paper status)</span>`}`;
     renderTodayStrip();
   } catch (e) {}
 }
@@ -718,17 +719,24 @@ $$("input[name=bt-mode]").forEach(r => r.onchange = applyBtMode);
 if (store.get("yx_btmode") === "full") $("input[name=bt-mode][value=full]").checked = true;
 applyBtMode();
 
+function skippedHTML(sk) {
+  if (!sk || !sk.length) return "";
+  return `<details class="xs" style="margin-bottom:8px"><summary>Refined data left out <b>${sk.length}</b> symbol-day${sk.length > 1 ? "s" : ""}</summary>
+    <div class="tscroll" style="max-height:200px"><table class="tbl"><thead><tr><th>Symbol</th><th>Day</th><th>Why</th></tr></thead><tbody>
+    ${sk.slice(0, 500).map(x => `<tr><td>${esc(x.symbol)}</td><td class="mono">${esc(x.day)}</td><td>${esc(x.reason)}</td></tr>`).join("")}</tbody></table></div></details>`;
+}
 function btBody() {
   return { strategy: $("#bt-strategy").value, symbols: syms("#bt-symbols"), interval: $("#bt-interval").value, start: $("#bt-start").value,
     end: $("#bt-end").value, source: $("#bt-source").value, params: pj("#bt-params"),
     param_space: $("#bt-space").value.trim() ? JSON.parse($("#bt-space").value) : null,
-    baseline_net_pnl: $("#bt-baseline").value ? parseFloat($("#bt-baseline").value) : null };
+    baseline_net_pnl: $("#bt-baseline").value ? parseFloat($("#bt-baseline").value) : null,
+    refined: $("#bt-refined").checked, square_off: $("#bt-sq").value || null };
 }
 $("#bt-quick").onclick = async () => {
   $("#bt-out").innerHTML = `<div class="panel t3"><span class="spin"></span> Running…</div>`;
   try {
     const r = await api("/api/backtests/quick", { json: btBody() });
-    $("#bt-out").innerHTML = `<div class="grid2"><div class="panel"><div class="panel-h"><h2>Results</h2></div>${metricsKV(r.metrics)}</div><div class="panel"><div class="panel-h"><h2>Equity</h2></div><div id="eq"></div></div></div>
+    $("#bt-out").innerHTML = `<div class="grid2"><div class="panel"><div class="panel-h"><h2>Results</h2><span class="t3 xs">square-off ${esc(r.square_off || "15:15")}</span></div>${skippedHTML(r.refined_skipped)}${metricsKV(r.metrics)}</div><div class="panel"><div class="panel-h"><h2>Equity</h2></div><div id="eq"></div></div></div>
       <div class="panel"><div class="panel-h"><h2>Trades</h2><span class="t3 xs">first 200</span></div><div class="tscroll tall"><table class="tbl"><thead><tr><th>Symbol</th><th>Side</th><th>Entry</th><th class="r">Price</th><th>Exit</th><th class="r">Price</th><th>Why</th><th class="r">Net P&L</th></tr></thead><tbody>
       ${r.trades.slice(0, 200).map(t => `<tr><td>${esc(t.symbol)}</td><td><span class="pill ${String(t.side).toLowerCase()}">${t.side}</span></td><td class="mono">${esc(fmtTs(t.entry_ts))}</td><td class="r">${fmt(t.entry)}</td><td class="mono">${esc(String(t.exit_ts).slice(11, 16))}</td><td class="r">${fmt(t.exit)}</td><td>${reasonHTML(t.exit_reason)}</td><td class="r ${cls(t.net_pnl)}">${inrS(t.net_pnl)}</td></tr>`).join("")}</tbody></table></div></div>`;
     equityChart($("#eq"), r.daily);
@@ -810,8 +818,8 @@ $("#par-run").onclick = async () => {
 const today = new Date(); $("#df-end").value = today.toISOString().slice(0, 10);
 $("#df-start").value = new Date(today - 55 * 864e5).toISOString().slice(0, 10);
 $("#df-go").onclick = async () => {
-  $("#df-out").textContent = "Fetching…";
-  try { const r = await api("/api/data/fetch", { json: { symbols: syms("#df-symbols"), source: $("#df-source").value, interval: $("#df-interval").value, start: $("#df-start").value, end: $("#df-end").value } });
+  $("#df-out").textContent = "Fetching… (Upstox fetches a month per request, so long ranges × many symbols take a while)";
+  try { const r = await api("/api/data/fetch", { json: { symbols: syms("#df-symbols"), source: $("#df-source").value, interval: ivList("#df-interval")[0] || "5m", intervals: ivList("#df-interval"), start: $("#df-start").value, end: $("#df-end").value } });
     $("#df-out").textContent = JSON.stringify(r, null, 2); loadInventory(); } catch (e) { $("#df-out").textContent = e.message; }
 };
 $("#up-preview").onclick = async () => {
@@ -827,7 +835,7 @@ $("#up-go").onclick = async () => {
 };
 async function loadInventory() {
   const r = await api("/api/data/inventory");
-  $("#inv tbody").innerHTML = r.candles.map(c => `<tr><td><b>${esc(c.symbol)}</b></td><td>${esc(c.interval)}</td><td class="r">${Number(c.n).toLocaleString("en-IN")}</td><td class="mono">${esc(fmtTs(c.first))}</td><td class="mono">${esc(fmtTs(c.last))}</td><td class="t3">${esc(c.source)}</td></tr>`).join("")
+  $("#inv tbody").innerHTML = r.candles.map(c => `<tr class="clk" data-exs="${esc(c.symbol)}" data-exi="${esc(c.interval)}" title="Click to add to Download stored data"><td><b>${esc(c.symbol)}</b></td><td>${esc(c.interval)}</td><td class="r">${Number(c.n).toLocaleString("en-IN")}</td><td class="mono">${esc(fmtTs(c.first))}</td><td class="mono">${esc(fmtTs(c.last))}</td><td class="t3">${esc(c.source)}</td></tr>`).join("")
     || `<tr><td colspan="6" class="empty"><div class="empty-act"><span>No stored candles yet. Real backtests and the AI score model need history.</span><button type="button" class="sm primary" id="inv-go">Download history for the watchlist</button></div></td></tr>`;
   $("#inv-go") && ($("#inv-go").onclick = () => { $("#dh-panel").scrollIntoView({ behavior: "smooth", block: "start" }); $("#dh-go").focus({ preventScroll: true }); });
 }
@@ -875,6 +883,8 @@ async function loadModelsTab() {
     <td>${m.status !== "champion" ? `<button type="button" class="sm" data-p="${m.id}">promote</button>` : ""}</td></tr>`).join("")
     || `<tr><td colspan="7" class="empty">No models yet. Train a meta-label model above (needs stored history — see the Data tab), or run Phase 4 setup on the System tab.</td></tr>`;
   $$("#models [data-p]").forEach(b => b.onclick = async () => { await api(`/api/models/${b.dataset.p}/promote`, { method: "POST" }); loadModelsTab(); });
+}
+async function loadBtHistory() {
   const bts = await api("/api/backtests");
   $("#bts tbody").innerHTML = bts.map(b => { const s = b.summary || {}; return `<tr><td class="r">${b.id}</td><td>${esc(b.kind)}</td><td>${esc(b.strategy)} v${b.strategy_version}</td><td>${s.verdict ? `<span class="pill ${s.verdict.toLowerCase()}">${esc(s.verdict)}</span>` : ""}</td>
     <td class="r">${s.trades ?? ""}</td><td class="r ${cls(s.net_pnl)}">${s.net_pnl == null ? "—" : inrS(s.net_pnl)}</td><td class="r">${fmt(s.win_rate)}</td><td class="r">${fmt(s.profit_factor)}</td><td class="r">${fmt(s.sharpe)}</td>
@@ -999,7 +1009,7 @@ function renderToday(j) {
     <td class="r">${x.exit != null ? fmt(x.exit) : x.ltp != null ? fmt(x.ltp) : ""}</td>
     <td class="r ${cls(x.net_pnl ?? x.mtm)}">${x.net_pnl != null ? inrS(x.net_pnl) : x.mtm != null ? inrS(x.mtm) + " MTM" : ""}</td><td>${x.entry_time ? tcBtn("rebuild:" + i, "") : ""}</td></tr>`).join("");
   renderTodayExtra(r);
-  $("#td-msg").innerHTML = `<b>${esc(r.is_today === false ? new Date(r.date + "T00:00:00Z").toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" }) : "Today")}</b> · ${r.strategy ? esc(r.strategy.replaceAll("_", " ")) + " · " : ""}${r.zone_candles ? "zone: " + esc(r.zone_candles) + " · entries: 1-minute · " : ""}${r.stocks} instruments · ${r.trades} trades · ${r.open} still open · realised <b class="${cls(r.realised)}">${inrS(r.realised)}</b> · open MTM <b class="${cls(r.open_mtm)}">${inrS(r.open_mtm)}</b> <span class="xs t3">(built ${esc(fmtTs(r.at))})</span>`;
+  $("#td-msg").innerHTML = `<b>${esc(r.is_today === false ? new Date(r.date + "T00:00:00Z").toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" }) : "Today")}</b> · ${r.strategy ? esc(r.strategy.replaceAll("_", " ")) + " · " : ""}${r.zone_candles ? "zone: " + esc(r.zone_candles) + " · entries: 1-minute · " : ""}${r.stocks} instruments · ${r.trades} trades · ${r.open} still open · realised <b class="${cls(r.realised)}">${inrS(r.realised)}</b> · open MTM <b class="${cls(r.open_mtm)}">${inrS(r.open_mtm)}</b> <span class="xs t3">(built ${esc(fmtTs(r.at))})</span>${r.entries_note ? `<div class="amber xs">${esc(r.entries_note)}</div>` : ""}`;
 }
 async function followToday(jid) {
   $("#td-bar").hidden = false; $("#td-go").disabled = true;
@@ -1061,7 +1071,13 @@ $("#ts-seg-fut").onchange = () => { if (!$("#ts-seg-fut").checked) [...TS.sel].f
 $("#ts-allfut").onchange = tsRender;
 async function loadMargin() {
   try { const m = await api("/api/wallet/margin"); $("#w-lev").value = m.equity_leverage; $("#w-futm").value = m.fut_margin_pct; } catch (e) {}
+  try { $("#w-sq").value = (await api("/api/settings/square-off")).time; } catch (e) {}
 }
+$("#w-sq-save").onclick = async () => {
+  try { const r = await api("/api/settings/square-off", { method: "PUT", json: { time: $("#w-sq").value } });
+    $("#w-margin-msg").innerHTML = `<span class="green">square-off at ${esc(r.time)} for paper trading, rebuilds and backtests</span>`; }
+  catch (e) { $("#w-margin-msg").innerHTML = `<span class="red">${esc(e.message)}</span>`; }
+};
 $("#w-margin").onclick = async () => {
   try { const m = await api("/api/wallet/margin", { method: "PUT", json: { equity_leverage: parseFloat($("#w-lev").value), fut_margin_pct: parseFloat($("#w-futm").value) } });
     $("#w-margin-msg").innerHTML = `<span class="green">saved: stocks ${m.equity_leverage}x, futures ${m.fut_margin_pct}% - rebuild to apply to today</span>`; loadWallet(); }
@@ -1455,7 +1471,9 @@ function indRenderPop() {
   const strats = Object.keys(SI.by_strategy);
   $("#ind-strat").innerHTML = strats.map(n => `<option value="${esc(n)}"${n === indStrat() ? " selected" : ""}>${esc(lname(n))}</option>`).join("");
   $("#ind-auto").checked = IND.auto; $("#ind-strat").disabled = !IND.auto;
-  $("#ind-auto-note").textContent = IND.auto ? `Shows what ${lname(indStrat())} looks at${IND.stratSet ? "" : " (follows the paper-test logic)"}. Tick a box to choose your own.` : "Your own selection. Tick Auto to follow a strategy.";
+  const own = { first_red_candle_zone: "It uses only its zone: the first red 5-minute candle's high and low, drawn as the zone high / zone low lines. No other indicator is involved.",
+    hari_master_block: "It uses only volume order blocks (shown in its calls and trade charts). No other indicator is involved." }[indStrat()];
+  $("#ind-auto-note").textContent = IND.auto ? (own && !indActive().length ? `${lname(indStrat())}: ${own}` : `Shows what ${lname(indStrat())} looks at${IND.stratSet ? "" : " (follows the paper-test logic)"}. Tick a box to choose your own.`) : "Your own selection. Tick Auto to follow a strategy.";
   const on = new Set(indActive());
   const box = n => `<label class="chk${on.has(n) ? " on" : ""}"><input type="checkbox" data-ind="${esc(n)}"${on.has(n) ? " checked" : ""}><i class="sw" style="background:${LSTYLE[IND_SWATCH[n]]?.[0] || "#888"}"></i>${esc(IND_LABEL[n] || n)}</label>`;
   const av = SI.available || [];
@@ -1750,6 +1768,28 @@ function accuracyHTML(s) {
     </tbody></table></div>` : ""}
     <p class="t3 xs">Expected profit per call comes from ${s.ev_source === "regression" ? "the <b>profit model</b> (it learns how much each call makes or loses after costs, per amount risked)" : "win chance × average win/loss of that strategy"}: it ranked the earlier held-back trades better. A useful model shows the best fifth clearly above the worst fifth in “Actual avg”.</p></div>`;
 }
+function tuningHTML(t) {
+  if (!t || !t.length) return `<div class="panel"><div class="panel-h"><h2>Strategy tuning</h2></div><p class="t3 xs">Run the Strategy Lab again to get tuned settings (bigger targets, 1 trade a day, only the stocks and times of day that worked).</p></div>`;
+  const rows = t.slice().sort((a, b) => (b.recommended - a.recommended) || ((b.tuned_test?.net ?? -1e12) - (a.tuned_test?.net ?? -1e12)));
+  const sm = x => x && x.trades ? `<span class="${cls(x.net)}">${inrS(x.net)}</span><div class="t3 xs">${x.trades} trades · avg ${inrS(x.avg, 0)} · win ${x.win ?? "—"}%</div>` : '<span class="t3">no trades</span>';
+  return `<div class="panel"><div class="panel-h"><h2>Strategy tuning</h2><span class="t3 xs">chosen on history before ${esc(rows[0].cut || "")} · judged on the later 30% it never saw</span></div>
+    <p class="panel-sub">For every strategy the Lab tried bigger targets (fewer, larger wins) and at most 1 trade a day, then kept only the stocks and times of day that made money in the earlier 70% of history. The "Later 30%" columns are the honest test: data the choice was not made on. Apply saves the tuned settings as a new strategy version (used by backtests, rebuilds and live calls); Reset goes back to the defaults.</p>
+    <div class="tscroll tall"><table class="tbl"><thead><tr><th>Strategy</th><th>Tuned settings</th><th class="r">Later 30%: default</th><th class="r">Later 30%: tuned</th><th>Verdict</th><th></th></tr></thead><tbody>
+    ${rows.map(x => `<tr><td><b>${esc(lname(x.strategy))}</b></td>
+      <td class="wrap xs">${x.params ? `target <b>${x.rr}R</b> · ${x.max_trades_per_day} trade/day · ${x.windows.map(esc).join(", ")}<div class="t3" title="${esc((x.symbols || []).join(", "))}">${x.symbols.length} stocks: ${esc(x.symbols.slice(0, 6).join(", "))}${x.symbols.length > 6 ? "…" : ""}</div>` : `<span class="t3">${esc(x.why || "")}</span>`}</td>
+      <td class="r">${sm(x.default_test)}</td><td class="r">${x.tuned_test ? sm(x.tuned_test) : "—"}</td>
+      <td class="wrap xs">${x.recommended ? '<span class="pill pass">recommended</span>' : x.params ? '<span class="pill review">not proven</span>' : ""}<div class="t3">${esc(x.params ? x.why : "")}</div></td>
+      <td class="r">${x.params ? `<button class="sm" data-tune="${esc(x.strategy)}">Apply</button> ` : ""}<button class="sm" data-tune-reset="${esc(x.strategy)}" title="Back to default settings">Reset</button></td></tr>`).join("")}
+    </tbody></table></div></div>`;
+}
+document.addEventListener("click", async ev => {
+  const b = ev.target.closest("[data-tune],[data-tune-reset]"); if (!b) return;
+  const name = b.dataset.tune || b.dataset.tuneReset, reset = !!b.dataset.tuneReset;
+  if (!reset && !confirm(`Apply the tuned settings to ${lname(name)}? A new strategy version is saved; backtests, rebuilds and live calls then use it.`)) return;
+  try { const r = await api("/api/lab/apply-tuning", { json: { strategy: name, reset } });
+    toast(`${lname(name)} v${r.version}: ${reset ? "back to default settings" : "tuned settings applied"}`, "buy"); }
+  catch (e) { toast(esc(e.message), "err"); }
+});
 function selectivityHTML(s) {
   const t = s.selectivity || [];
   if (!t.length) return "";
@@ -1835,7 +1875,7 @@ function renderLab(r) {
   $("#lab-when").textContent = r.finished ? `last run ${fmtTs(r.finished, { utc: true })} · from ${fmtTs(r.start, { date: true })} · ${(r.instruments || []).length} instruments · ${Number(r.candles || 0).toLocaleString("en-IN")} candles` : "";
   const best = Object.entries(r.best_by_symbol || {}).sort((a, b) => (b[1].net_pnl || 0) - (a[1].net_pnl || 0));
   const pairs = r.pairs || [];
-  $("#lab-out").innerHTML = `${selectorHTML(r.selector)}
+  $("#lab-out").innerHTML = `${tuningHTML(r.tuning)}${selectorHTML(r.selector)}
     <div class="panel"><div class="panel-h"><h2>Leaderboard</h2><span class="t3 xs">all history · after costs · click a header to sort, a row for its trades</span></div><div id="lab-lb-w">${leaderHTML()}</div></div>
     <div class="panel" id="lab-trades" hidden></div>
     <div class="grid2">
@@ -1877,6 +1917,7 @@ async function openTradeChart(o) {
   $("#tc-title").textContent = `${o.symbol} · ${fmtTs(o.day, { date: true })}`;
   $("#tc-sub").textContent = `${lname(o.strategy)} · 5-minute candles · ${trades.length} trade${trades.length === 1 ? "" : "s"}`;
   $("#tc-legend").innerHTML = `<span class="t3 xs"><span class="spin"></span> loading…</span>`;
+  $("#tc-calc").innerHTML = o.calc || "";
   $("#tc-tbl tbody").innerHTML = trades.map(t => `<tr class="${t === o.focus ? "sel" : ""}"><td><span class="pill ${String(t.side).toLowerCase()}">${esc(t.side)}</span></td><td class="mono">${esc(String(t.entry_ts).slice(11, 16))}</td><td class="r">${fmt(t.entry)}</td>
     <td class="mono">${t.exit_ts ? esc(tsDay(t.exit_ts) === o.day ? String(t.exit_ts).slice(11, 16) : fmtTs(t.exit_ts)) : "—"}</td><td class="r">${t.exit != null ? fmt(t.exit) : "—"}</td><td>${reasonHTML(t.exit_reason)}</td>
     <td class="r">${t.stop_loss != null ? fmt(t.stop_loss) : "—"}</td><td class="r">${t.target != null ? fmt(t.target) : "—"}</td><td class="r ${cls(t.pnl)}">${t.pnl != null ? inrS(t.pnl) : "—"}</td></tr>`).join("");
@@ -1905,7 +1946,15 @@ async function openTradeChart(o) {
     });
     tcSeries.setMarkers(mk.sort((a, b) => a.time - b.time));
     const f = o.focus && o.focus.entry_ts ? o.focus : trades[0];
-    if (f) {
+    if (o.zone) {                       // YONEXIS AI dashboard: the zone itself and every trade's own target/stop
+      tcLines.push(tcSeries.createPriceLine({ price: +o.zone.high, color: "#f59e0b", lineStyle: 0, lineWidth: 2, title: `zone high ${fmt(o.zone.high)}` }));
+      tcLines.push(tcSeries.createPriceLine({ price: +o.zone.low, color: "#f59e0b", lineStyle: 0, lineWidth: 2, title: `zone low ${fmt(o.zone.low)}` }));
+      [...new Set(trades.filter(t => t.target != null).map(t => +t.target))].forEach(v => tcLines.push(tcSeries.createPriceLine({ price: v, color: C.buy, lineStyle: 2, lineWidth: 1, title: "target" })));
+      const zt = snap(tu(o.zone.ts));
+      const zm = mk.concat([{ time: zt, position: "aboveBar", color: "#f59e0b", shape: "square", text: "first red" }]);
+      tcSeries.setMarkers(zm.sort((a, b) => a.time - b.time));
+      $("#tc-sub").textContent = `First red candle zone ${fmt(o.zone.low)}–${fmt(o.zone.high)} (range ${fmt(o.zone.range)}) · 5-minute candles · ${trades.length} trade${trades.length === 1 ? "" : "s"}`;
+    } else if (f) {
       if (f.stop_loss != null) tcLines.push(tcSeries.createPriceLine({ price: +f.stop_loss, color: C.sell, lineStyle: 2, lineWidth: 1, title: "stop" }));
       if (f.target != null) tcLines.push(tcSeries.createPriceLine({ price: +f.target, color: C.buy, lineStyle: 2, lineWidth: 1, title: "target" }));
       if (f.entry != null) tcLines.push(tcSeries.createPriceLine({ price: +f.entry, color: "#64748b", lineStyle: 1, lineWidth: 1, title: "entry", axisLabelVisible: false }));
@@ -1979,3 +2028,501 @@ $("#wl-fut").onclick = async () => {
     toast(`Added ${r.added.length} futures${r.missing.length ? " · no futures for " + r.missing.join(", ") : ""}`, "buy"); }
   catch (e) { toast(esc(e.message), "sell"); }
 };
+
+// ---------------------------------------------------------------- universal symbol picker (multi-select, type to search)
+const IVS = ["1m", "3m", "5m", "10m", "15m", "30m", "60m", "1d"];
+function makeIvPicker(span) {
+  const inp = document.getElementById(span.dataset.for);
+  const render = () => {
+    const on = new Set(inp.value.split(",").map(x => x.trim()).filter(Boolean));
+    span.innerHTML = IVS.map(v => `<button type="button" class="ivb${on.has(v) ? " on" : ""}" data-iv="${v}" aria-pressed="${on.has(v)}">${v}</button>`).join("");
+    span.querySelectorAll("[data-iv]").forEach(b => b.onclick = () => {
+      on.has(b.dataset.iv) ? on.delete(b.dataset.iv) : on.add(b.dataset.iv);
+      if (!on.size) on.add(b.dataset.iv);
+      inp.value = IVS.filter(v => on.has(v)).join(","); render();
+    });
+  };
+  render();
+}
+$$(".iv-pick").forEach(makeIvPicker);
+const ivList = id => $(id).value.split(",").map(x => x.trim()).filter(Boolean);
+
+function makeSymPicker(input, { single = false, quick = true } = {}) {
+  if (!input || input.dataset.picker) return;
+  input.dataset.picker = "1"; input.hidden = true;
+  const box = document.createElement("div"); box.className = "sp";
+  box.innerHTML = `<div class="sp-chips"></div><input class="sp-q" placeholder="${single ? "type a symbol…" : "type to search, Enter to add (RELIANCE, NIFTY-FUT…)"}" autocomplete="off"><div class="sp-sugg" hidden></div>
+    ${quick && !single ? `<div class="sp-quick"><button type="button" class="link" data-q="watch">+ whole watchlist</button> <button type="button" class="link" data-q="stocks">+ watchlist stocks</button> <button type="button" class="link" data-q="futs">+ watchlist futures</button> <button type="button" class="link" data-q="clear">clear</button> <select class="sp-lists sm" aria-label="Add a watchlist"><option value="">+ watchlist…</option></select></div>` : ""}`;
+  input.after(box);
+  const chips = box.querySelector(".sp-chips"), q = box.querySelector(".sp-q"), sg = box.querySelector(".sp-sugg");
+  const get = () => input.value.split(",").map(x => x.trim().toUpperCase()).filter(Boolean);
+  const set = arr => { input.value = [...new Set(arr)].join(","); input.dispatchEvent(new Event("change")); draw(); };
+  const draw = () => {
+    const v = get();
+    chips.innerHTML = v.length > 40 ? `<span class="sp-chip">${v.length} symbols <button type="button" data-clear aria-label="Clear">×</button></span>`
+      : v.map(x => `<span class="sp-chip">${esc(x)}<button type="button" data-rm="${esc(x)}" aria-label="Remove ${esc(x)}">×</button></span>`).join("");
+    chips.querySelectorAll("[data-rm]").forEach(b => b.onclick = () => set(get().filter(x => x !== b.dataset.rm)));
+    chips.querySelector("[data-clear]")?.addEventListener("click", () => set([]));
+  };
+  const add = sym => { sym = sym.trim().toUpperCase(); if (!sym) return; set(single ? [sym] : [...get(), sym]); q.value = ""; sg.hidden = true; if (!single) q.focus(); };
+  let timer = null, hits = [], idx = -1;
+  const showHits = () => {
+    sg.hidden = !hits.length;
+    sg.innerHTML = hits.map((h, i) => `<div class="sp-h${i === idx ? " on" : ""}" data-s="${esc(h.symbol)}"><b>${esc(h.symbol)}</b> <small>${esc(h.name || "")}</small></div>`).join("");
+    sg.querySelectorAll("[data-s]").forEach(d => d.onmousedown = e => { e.preventDefault(); add(d.dataset.s); });
+  };
+  q.oninput = () => { clearTimeout(timer); timer = setTimeout(async () => {
+    try { hits = (await api(`/api/symbols/search?q=${encodeURIComponent(q.value)}`)).filter(h => !get().includes(h.symbol)); idx = hits.length ? 0 : -1; showHits(); } catch (e) { hits = []; showHits(); } }, 150); };
+  q.onfocus = () => q.oninput();
+  q.onblur = () => setTimeout(() => { sg.hidden = true; }, 150);
+  q.onkeydown = e => {
+    if (e.key === "ArrowDown" && hits.length) { idx = (idx + 1) % hits.length; showHits(); e.preventDefault(); }
+    else if (e.key === "ArrowUp" && hits.length) { idx = (idx - 1 + hits.length) % hits.length; showHits(); e.preventDefault(); }
+    else if (e.key === "Enter") { e.preventDefault(); if (idx >= 0 && hits[idx]) add(hits[idx].symbol); else q.value.split(/[,\s]+/).forEach(add); }
+    else if (e.key === "Backspace" && !q.value && get().length) set(get().slice(0, -1));
+    else if (e.key === "Escape") sg.hidden = true;
+  };
+  q.addEventListener("paste", e => { const t = (e.clipboardData || window.clipboardData).getData("text"); if (/[,\s]/.test(t.trim())) { e.preventDefault(); set([...get(), ...t.split(/[,\s]+/).map(x => x.trim().toUpperCase()).filter(Boolean)]); } });
+  box.querySelectorAll("[data-q]").forEach(b => b.onclick = async () => {
+    if (b.dataset.q === "clear") return set([]);
+    const w = await api("/api/watchlist");
+    const all = w.symbols || [];
+    set([...get(), ...(b.dataset.q === "stocks" ? all.filter(x => !x.endsWith("-FUT")) : b.dataset.q === "futs" ? all.filter(x => x.endsWith("-FUT")) : all)]);
+  });
+  input.addEventListener("sp:refresh", draw);
+  draw();
+  return { get, set };
+}
+["#df-symbols", "#bt-symbols", "#ex-symbols", "#tm-symbols"].forEach(id => $(id) && makeSymPicker($(id)));
+$("#up-symbol") && makeSymPicker($("#up-symbol"), { single: true, quick: false });
+
+async function exportData(fmt) {
+  const s = syms("#ex-symbols");
+  if (!s.length) { $("#ex-msg").innerHTML = '<span class="red">pick at least one symbol</span>'; return; }
+  $("#ex-msg").innerHTML = '<span class="spin"></span> preparing…';
+  const qs = new URLSearchParams({ symbols: s.join(","), intervals: ivList("#ex-interval").join(","), fmt });
+  if ($("#ex-start").value) qs.set("start", $("#ex-start").value);
+  if ($("#ex-end").value) qs.set("end", $("#ex-end").value);
+  try {
+    const r = await fetch(`/api/data/export?${qs}`, { headers: { "X-Admin-Token": TOKEN } });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+    const blob = await r.blob(), cd = r.headers.get("content-disposition") || "", m = /filename="([^"]+)"/.exec(cd);
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = m ? m[1] : `yonexis.${fmt}`; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    $("#ex-msg").innerHTML = `<span class="green">downloaded ${esc(a.download)}</span>`;
+  } catch (e) { $("#ex-msg").innerHTML = `<span class="red">${esc(e.message)}</span>`; }
+}
+$("#ex-csv").onclick = () => exportData("csv");
+$("#ex-xlsx").onclick = () => exportData("xlsx");
+
+document.addEventListener("click", e => {
+  const tr = e.target.closest("#inv [data-exs]"); if (!tr) return;
+  const inp = $("#ex-symbols"); const cur = syms("#ex-symbols");
+  if (!cur.includes(tr.dataset.exs)) inp.value = [...cur, tr.dataset.exs].join(",");
+  const iv = new Set(ivList("#ex-interval")); iv.add(tr.dataset.exi); $("#ex-interval").value = [...iv].join(",");
+  inp.dispatchEvent(new Event("sp:refresh")); $$(".iv-pick").forEach(makeIvPicker);
+  $("#ex-msg").textContent = `${tr.dataset.exs} ${tr.dataset.exi} added`;
+});
+
+// ---------------------------------------------------------------- YONEXIS AI dashboard (zone only)
+const ZN = { mode: "day", r: null };
+function znSetMode(m) {
+  ZN.mode = m; $$("#zn-mode [data-m]").forEach(b => { b.classList.toggle("on", b.dataset.m === m); b.setAttribute("aria-checked", String(b.dataset.m === m)); });
+  $("#zn-end-l").hidden = m === "day";
+  $("#zn-ai").hidden = m !== "ai";
+  $(".zcfg-wrap").hidden = m === "ai";
+  $("#zn-capital").closest("label").hidden = m === "ai";
+  $("#zn-symbols").placeholder = m === "ai" ? "empty = every future with stored data" : "";
+  $("#zn-go").textContent = { day: "Run day", range: "Run backtest", ai: "Run AI backtest" }[m];
+  if (m === "ai") { zaCount(); if (ZN.aiLast && ZN.ai !== ZN.aiLast) zaRender(ZN.aiLast); }
+}
+const zaNums = sel => $(sel).value.split(/[\s,]+/).map(parseFloat).filter(x => !isNaN(x));
+function zaGrid() {
+  return { lot1: zaNums("#za-l1"), lot2: zaNums("#za-l2"), entries: zaNums("#za-en").map(Math.round), sizes: zaNums("#za-sz").map(Math.round),
+    bases: [$("#za-bz").checked && "zone", $("#za-bi").checked && "iz"].filter(Boolean), spikes: [].concat($("#za-s1").checked ? [true] : [], $("#za-s0").checked ? [false] : []),
+    train_share: (parseFloat($("#za-tr").value) || 70) / 100 };
+}
+function zaCount() {
+  const g = zaGrid(); const sp = [$("#za-s1").checked, $("#za-s0").checked].filter(Boolean).length;
+  const pairs = g.lot1.reduce((n, a) => n + g.lot2.filter(b => a <= b).length, 0);
+  const n = pairs * g.bases.length * sp * g.entries.length;
+  $("#za-count").textContent = `${n} configurations (${pairs} lot-target pairs × ${g.bases.length} target multiplier × ${sp} spike × ${g.entries.length} entries setting) on every future and every day. Pairs where lot 1 > lot 2 are the same trade as the reversed pair, so they are counted once.`;
+}
+["#za-l1", "#za-l2", "#za-en", "#za-bz", "#za-bi", "#za-s1", "#za-s0"].forEach(x => $(x).addEventListener("input", zaCount));
+$$("#zn-mode [data-m]").forEach(b => b.onclick = () => znSetMode(b.dataset.m));
+
+(function znInit() {
+  const lastTrading = () => { const d = new Date(); d.setHours(12); while ([0, 6].includes(d.getDay())) d.setDate(d.getDate() - 1); return d.toISOString().slice(0, 10); };
+  $("#zn-start").value = lastTrading(); $("#zn-end").value = lastTrading();
+  makeSymPicker($("#zn-symbols"));
+  api("/api/zone/last-params").then(p => {
+    if (!p || !p.symbols) return;
+    $("#zn-symbols").value = p.symbols.join(","); $("#zn-symbols").dispatchEvent(new Event("sp:refresh"));
+    const tb = c => ({ iz_entry: "iz" })[c.target_base || p.target_base] || c.target_base || p.target_base || "zone", sp = c => (c.spike ?? p.spike) !== false;
+    if (p.configs && p.configs.length) ZCFG = p.configs.map(c => ({ max_cycles: c.max_cycles, lot_targets: c.lot_targets, target_base: tb(c), spike: sp(c) }));
+    else ZCFG = [{ max_cycles: p.max_cycles ?? 2, lot_targets: p.lot_targets || [p.target_mult ?? 1.5], target_base: tb({}), spike: sp({}) }];
+    $("#zn-sq").value = p.square_off || "15:15"; $("#zn-refined").checked = !!p.refined;
+    zcfgRender(); $("#zn-cutoff").value = p.entry_cutoff || "14:30";
+    $("#zn-capital").value = p.capital_per_trade ?? 100000; $("#zn-short").checked = p.allow_short !== false; $("#zn-costs").checked = p.include_costs !== false;
+    $("#zn-maxz").value = p.max_zone_pct && p.max_zone_pct < 100 ? p.max_zone_pct : "";
+    if (p.start) $("#zn-start").value = p.start; if (p.end) $("#zn-end").value = p.end;
+    znSetMode(p.start && p.end && p.start !== p.end ? "range" : "day");
+  }).catch(() => {});
+  api("/api/zone/ai-last-params").then(p => {
+    if (!p || !p.lot1) return;
+    $("#za-l1").value = p.lot1.join(", "); $("#za-l2").value = p.lot2.join(", "); $("#za-en").value = p.entries.join(", "); $("#za-sz").value = p.sizes.join(", ");
+    $("#za-tr").value = Math.round((p.train_share || 0.7) * 100); $("#za-bz").checked = p.bases.includes("zone"); $("#za-bi").checked = p.bases.includes("iz");
+    $("#za-s1").checked = p.spikes.includes(true); $("#za-s0").checked = p.spikes.includes(false); zaCount();
+  }).catch(() => {});
+  api("/api/jobs/latest/zone_ai").then(j => { if (j && j.status === "running") { znSetMode("ai"); znFollow(j.id); } else if (j && j.status === "done" && j.result) ZN.aiLast = j.result; }).catch(() => {});
+  api("/api/jobs/latest/zone_run").then(j => { if (j && j.status === "running") znFollow(j.id); else if (j && j.status === "done") znRender(j.result); }).catch(() => {});
+})();
+async function znFollow(jid) {
+  $("#zn-bar").hidden = false; $("#zn-go").disabled = true;
+  const j = await pollJob(jid, j => { const l = j.log.at(-1) || {}; $("#zn-bar > div").style.width = `${l.total ? Math.round(l.done / l.total * 100) : 5}%`; $("#zn-msg").innerHTML = `<span class="spin"></span> ${esc(j.stage)}`; });
+  $("#zn-bar").hidden = true; $("#zn-go").disabled = false;
+  if (j.status !== "done") { $("#zn-msg").innerHTML = `<span class="red">${esc(j.error || "failed")}</span>`; return; }
+  $("#zn-msg").textContent = ""; (j.result && j.result.sets ? zaRender : znRender)(j.result);
+}
+$("#zn-go").onclick = async () => {
+  if (ZN.mode === "ai") return zaRun();
+  const symbols = syms("#zn-symbols");
+  if (!symbols.length) { $("#zn-msg").innerHTML = '<span class="red">pick at least one symbol</span>'; return; }
+  const body = { symbols, start: $("#zn-start").value, end: ZN.mode === "range" ? $("#zn-end").value : $("#zn-start").value,
+    max_cycles: ZCFG[0].max_cycles, target_mult: ZCFG[0].lot_targets[0], lot_targets: ZCFG[0].lot_targets, configs: ZCFG, entry_cutoff: $("#zn-cutoff").value || "14:30",
+    allow_short: $("#zn-short").checked, capital_per_trade: parseFloat($("#zn-capital").value) || 100000, include_costs: $("#zn-costs").checked,
+    max_zone_pct: parseFloat($("#zn-maxz").value) || 100,
+    target_base: ZCFG[0].target_base || "zone", spike: ZCFG[0].spike !== false, square_off: $("#zn-sq").value || "15:15", refined: $("#zn-refined").checked };
+  try { const { job_id } = await api("/api/zone/run", { json: body }); znFollow(job_id); }
+  catch (e) { $("#zn-msg").innerHTML = `<span class="red">${esc(e.message)}</span>`; }
+};
+const znReason = r => ({ target: "Target hit", stop_loss: "Stop hit (zone edge)", square_off: "Square-off", open: "Still open" }[r] || r);
+function znCalcHTML(tr, z, p) {
+  if (!tr.length) return "";
+  const hm = x => esc(String(x || "").slice(11, 16));
+  const spike = (p || {}).spike !== false;
+  const rows = tr.slice().sort((a, b) => (a.entry_ts + a.lot).localeCompare(b.entry_ts + b.lot)).map(t => {
+    const buy = t.side === "BUY", base = t.target_base || "zone", m = t.target_mult;
+    const hi = t.range_hi ?? (base === "zone" && z ? z.high : null), lo = t.range_lo ?? (base === "zone" && z ? z.low : null);
+    const R = hi != null && lo != null ? hi - lo : null;
+    const src = base === "zone" ? `zone candle${z ? " " + hm(z.ts) : ""}` : `entry candle ${hm(t.entry_ts)}`;
+    const rangeL = R != null ? `Range (${base === "zone" ? "Zone" : "IZ"} = ${src}): high ${fmt(hi)} − low ${fmt(lo)} = <b>${fmt(R)}</b>` : `Range (IZ = entry candle ${hm(t.entry_ts)}): not known yet - the trade closed inside its entry candle`;
+    const tgtL = R != null && t.target != null ? `Target = entry ${fmt(t.entry)} ${buy ? "+" : "−"} ${fmt(R)} × ${m} = ${fmt(t.entry)} ${buy ? "+" : "−"} ${fmt(R * m)} = <b>${fmt(t.target)}</b>` : "Target: not set (the entry candle had not closed)";
+    const stopL = `Stop = zone ${buy ? "low" : "high"} ${fmt(t.stop)}${spike ? " (touch)" : " (a candle must open or close beyond it)"}`;
+    const q = t.qty, d = buy ? 1 : -1;
+    const exitL = t.exit != null ? `Exit ${hm(t.exit_ts)} at ${fmt(t.exit)} (${esc(znReason(t.exit_reason))}): (${fmt(t.exit)} − ${fmt(t.entry)})${d < 0 ? " × −1" : ""} × ${q} qty = gross ${inrS(t.gross_pnl)} − costs ${inrS(t.costs)} = <b class="${cls(t.net_pnl)}">${inrS(t.net_pnl)}</b>` : `Still open · ${inrS(t.net_pnl)}`;
+    return `<li><b>Entry ${t.cycle} · lot ${t.lot}/${t.lots}</b> · <span class="pill ${buy ? "buy" : "sell"}">${t.side}</span> ${hm(t.entry_ts)} at ${fmt(t.entry)}<br>${rangeL}<br>${tgtL}<br>${stopL}<br>${exitL}</li>`;
+  });
+  return `<details class="lab-how" open><summary>Target calculation</summary><ol class="xs t2 calc-list">${rows.join("")}</ol></details>`;
+}
+function znChart(sym, day, focus) {
+  const r = ZN.r; if (!r) return;
+  const tr = r.trades.filter(t => t.symbol === sym && t.day === day);
+  const z = (r.zones || []).find(x => x.symbol === sym && x.day === day);
+  openTradeChart({ symbol: sym, day, strategy: "first_red_candle_zone", zone: z, calc: znCalcHTML(tr, z, r.params),
+    trades: tr.map(t => ({ side: t.side, entry_ts: t.entry_ts, entry: t.entry, exit_ts: t.exit_ts, exit: t.exit, exit_reason: t.exit_reason, stop_loss: t.stop, target: t.target, pnl: t.net_pnl })),
+    focus: null });
+}
+// ---------------- AI backtest (configuration + futures set search)
+async function zaRun() {
+  const g = zaGrid();
+  if (!g.bases.length || !g.spikes.length) { $("#zn-msg").innerHTML = '<span class="red">tick at least one target multiplier and one spike setting</span>'; return; }
+  const body = { symbols: syms("#zn-symbols"), start: $("#zn-start").value, end: $("#zn-end").value, ...g,
+    entry_cutoff: $("#zn-cutoff").value || "14:30", square_off: $("#zn-sq").value || "15:15", allow_short: $("#zn-short").checked,
+    include_costs: $("#zn-costs").checked, refined: $("#zn-refined").checked, max_zone_pct: parseFloat($("#zn-maxz").value) || 100 };
+  try { const { job_id } = await api("/api/zone/ai-search", { json: body }); znFollow(job_id); }
+  catch (e) { $("#zn-msg").innerHTML = `<span class="red">${esc(e.message)}</span>`; }
+}
+function zaLoad(x) {
+  ZCFG = [{ max_cycles: x.config.max_cycles, lot_targets: x.config.lot_targets.slice(), target_base: x.config.target_base, spike: x.config.spike }];
+  zcfgRender(); $("#zn-symbols").value = x.symbols.join(","); $("#zn-symbols").dispatchEvent(new Event("sp:refresh"));
+  znSetMode("range"); window.scrollTo({ top: 0, behavior: "smooth" });
+  $("#zn-msg").innerHTML = `<span class="green">loaded: ${esc(x.label)} · ${x.symbols.length} futures - press Run backtest to see every trade and chart</span>`;
+}
+function zaRender(a) {
+  ZN.ai = a; ZN.aiLast = a; ZN.r = null;
+  const nr = (v, b = false) => `<span class="${cls(v)}">${b ? "<b>" : ""}${inrS(v)}${b ? "</b>" : ""}</span>`;
+  const setRow = (st, k, which) => { const x = st[which], h = which === "honest";
+    return `<tr class="${h ? "" : "t2"}"><td>${h ? `<b>${st.n}</b>` : ""}</td><td>${h ? '<span class="pill pass xs">honest pick</span>' : '<span class="pill xs">maximum profit</span>'}</td><td>${esc(x.label)}</td>
+      <td class="r">${nr(x.train_net)}</td><td class="r">${nr(x.test_net, h)}</td><td class="r">${x.test_days ? `${x.test_green_days}/${x.test_days}` : "—"}</td><td class="r">${nr(x.full_net, !h)}</td>
+      <td class="r">${x.win_rate}%</td><td class="r red">${inrS(x.max_drawdown)}</td>
+      <td class="r" title="margin blocked with every future of the set open at once: 2 lots × lot size × latest price × ${x.margin_pct ?? a.margin_pct}% · contract value ${inr(x.contract_value ?? 0)}">${x.investment != null ? `<b>${inr(x.investment)}</b><div class="xs t3">contracts ${inr(x.contract_value)}</div>` : "—"}</td>
+      <td class="r">${x.return_pct != null ? `<span class="${cls(x.return_pct)}">${x.return_pct}%</span>${h && x.test_return_pct != null ? `<div class="xs t3">check ${x.test_return_pct}%</div>` : ""}` : "—"}</td>
+      <td><button type="button" class="sm" data-za="${k}|${which}|show">Symbols</button> <button type="button" class="sm" data-za="${k}|${which}|load">Load</button> <button type="button" class="sm" data-za="${k}|${which}|save">Save as watchlist</button></td></tr>
+      <tr hidden id="za-sym-${k}-${which}"><td></td><td colspan="11"><div class="row xs">${x.per_symbol.map(p => `<span class="chip">${esc(p.symbol)} · pick-period ${nr(p.train)} · check ${nr(p.test)}${p.investment != null ? ` · margin ${inr(p.investment)} (2 × ${p.lot} @ ${fmt(p.price)})` : ""}</span>`).join(" ")}</div></td></tr>`; };
+  $("#zn-out").innerHTML = `<div class="panel"><div class="panel-h"><h2>AI backtest · best futures sets</h2>
+    <span class="t3 xs">${a.configs_tested} configurations × ${a.symbols_tested} futures × ${a.days} days (${esc(a.start)} → ${esc(a.end)})${a.refined ? ` · refined data left out ${a.skipped_days} symbol-days` : ""}</span></div>
+    <p class="panel-sub"><b>Honest pick</b>: configuration and futures chosen only on ${esc(a.start)} → ${esc(a.split)} (first ${Math.round(a.train_share * 100)}%); the <b>Check</b> column is what that pick then made on ${esc(a.split)} → ${esc(a.end)}, data it never saw. Trust this one. <b>Maximum profit</b>: chosen on the whole period - the best that was possible in hindsight; it will not repeat this well. <b>Total investment</b> = margin blocked when every future of the set is open at once (2 lots × lot size × latest price × ${a.margin_pct ?? 15}% futures margin from Paper Wallet); hover for the full contract value.</p>
+    <div class="tscroll"><table class="tbl"><thead><tr><th>Futures</th><th>Pick</th><th>Configuration</th><th class="r">Pick period</th><th class="r">Check period</th><th class="r">Check green days</th><th class="r">Whole period</th><th class="r">Win %</th><th class="r">Max DD</th><th class="r" title="margin needed when every future of the set is open at the same time">Total investment</th><th class="r" title="whole-period net ÷ total investment">Return</th><th></th></tr></thead><tbody>
+    ${a.sets.map((st, k) => setRow(st, k, "honest") + setRow(st, k, "max")).join("")}</tbody></table></div></div>
+    <div class="grid2"><div class="panel"><div class="panel-h"><h2>Best configurations on all futures</h2></div><div class="tscroll"><table class="tbl"><thead><tr><th>Configuration</th><th class="r">Pick</th><th class="r">Check</th><th class="r">Whole</th><th class="r">Win %</th><th class="r">Profitable futures</th></tr></thead><tbody>
+      ${a.top_configs.map(c => `<tr><td>${esc(c.label)}</td><td class="r">${nr(c.train_net)}</td><td class="r">${nr(c.test_net)}</td><td class="r">${nr(c.full_net, true)}</td><td class="r">${c.win_rate}%</td><td class="r">${c.profitable_symbols}/${a.symbols_tested}</td></tr>`).join("")}</tbody></table></div></div>
+    <div class="panel"><div class="panel-h"><h2>Futures</h2><span class="t3 xs">consistency = share of configurations profitable in both periods</span></div><div class="tscroll tall"><table class="tbl"><thead><tr><th>Future</th><th>Its best configuration</th><th class="r">Whole</th><th class="r">Check</th><th class="r">Consistency</th><th class="r">Days</th></tr></thead><tbody>
+      ${a.symbols.map(x => `<tr><td>${esc(x.symbol)}</td><td class="xs">${esc(x.best)}</td><td class="r">${nr(x.best_full)}</td><td class="r">${nr(x.best_test)}</td><td class="r">${x.consistency}%</td><td class="r">${x.days}${x.skipped_days ? ` <span class="t3">(−${x.skipped_days})</span>` : ""}</td></tr>`).join("")}</tbody></table></div></div></div>`;
+  $$("#zn-out [data-za]").forEach(b => b.onclick = async () => {
+    const [k, which, act] = b.dataset.za.split("|"), st = a.sets[+k], x = st[which];
+    if (act === "show") { const r = $(`#za-sym-${k}-${which}`); r.hidden = !r.hidden; return; }
+    if (act === "load") return zaLoad(x);
+    const name = `AI ${which === "honest" ? "pick" : "max"} ${st.n} futures`;
+    try { await api("/api/watchlists", { method: "PUT", json: { name, symbols: x.symbols } }); b.textContent = `saved as "${name}"`; }
+    catch (e) { b.textContent = e.message; }
+  });
+}
+function znRender(full, k) {
+  if (full && full.reports) { ZN.full = full; k = k ?? full.best ?? 0; ZN.k = k; znDraw(full.reports[k], full); return; }
+  znDraw(full, null);
+}
+function znCompareHTML(full) {
+  if (!full || !full.configs || full.configs.length < 2) return "";
+  return `<div class="panel"><div class="panel-h"><h2>Configurations compared</h2><span class="t3 xs">same stocks, same days · more lots also means more capital per entry, so compare "Net / lot exit" too · click a row for its full report</span></div>
+    <div class="tscroll"><table class="tbl" id="zn-cmp"><thead><tr><th>#</th><th>Configuration</th><th class="r">Entries</th><th class="r">Lot exits</th><th class="r">Win %</th><th class="r">Gross</th><th class="r">Costs</th><th class="r">Net</th><th class="r" title="net P&L per lot exit: compares configurations fairly when they use different numbers of lots">Net / lot exit</th><th class="r">Green days</th><th class="r">Max DD</th></tr></thead><tbody>
+    ${full.configs.map((c, i) => { const t = c.total || {}; return `<tr class="clk${i === ZN.k ? " sel" : ""}" data-zk="${i}"><td>${i + 1}${i === full.best ? ' <span class="pill pass xs">best</span>' : ""}</td><td><b>${esc(c.label)}</b></td>
+      <td class="r">${t.entries ?? 0}</td><td class="r">${t.trades ?? 0}</td><td class="r">${t.win_rate ?? "—"}</td><td class="r ${cls(t.gross)}">${inrS(t.gross)}</td><td class="r">${inrS(t.costs)}</td>
+      <td class="r ${cls(t.net)}"><b>${inrS(t.net)}</b></td><td class="r ${cls(t.net)}">${t.trades ? inrS(t.net / t.trades, 0) : "—"}</td><td class="r">${t.days ? `${t.green_days}/${t.days}` : "—"}</td><td class="r red">${t.max_drawdown != null ? inrS(t.max_drawdown) : "—"}</td></tr>`; }).join("")}
+    </tbody></table></div></div>`;
+}
+function znDraw(r, full) {
+  ZN.r = r;
+  const T = r.total || {}, p = r.params || {}, range = r.start !== r.end;
+  const kp = (k, v, c = "", sub = "") => `<div class="card"><div class="k">${k}</div><div class="v ${c}">${v}</div>${sub ? `<div class="s">${sub}</div>` : ""}</div>`;
+  const tr = r.trades.slice().sort((a, b) => (a.day + a.entry_ts).localeCompare(b.day + b.entry_ts));
+  const days = r.by_day || [];
+  $("#zn-out").innerHTML = `${znCompareHTML(full)}
+  <div class="panel"><div class="panel-h"><h2>${full && full.configs && full.configs.length > 1 ? `#${ZN.k + 1} · ` : ""}${range ? `Backtest ${esc(fmtTs(r.start, { date: true }))} → ${esc(fmtTs(r.end, { date: true }))}` : `Day ${esc(fmtTs(r.start, { date: true }))}`}</h2>
+    <span class="t3 xs">${r.symbols.length} symbols · ${esc(r.label || `max ${p.max_cycles} entries/day · target ${p.target_mult}×`)} · cut-off ${esc(p.entry_cutoff)} · square-off ${esc(p.square_off || "15:15")}${p.refined ? " · refined data" : ""}${p.include_costs ? " · after costs" : " · before costs"}</span></div>
+    ${skippedHTML(r.refined_skipped)}
+    <div class="cards zcards">
+      ${kp("Net P&L", inrS(T.net), cls(T.net), `gross ${inrS(T.gross)} · costs ${inrS(T.costs)}`)}
+      ${kp("Entries", T.entries ?? T.trades ?? 0, "", `${T.trades ?? 0} lot exits · ${T.wins ?? 0} winning`)}
+      ${kp("Win rate", T.win_rate == null ? "—" : T.win_rate + "%")}
+      ${kp("Avg / trade", T.trades ? inrS(T.net / T.trades, 0) : "—", cls(T.net))}
+      ${range ? kp("Green days", T.days ? `${T.green_days}/${T.days}` : "—") + kp("Max drawdown", T.max_drawdown != null ? inrS(T.max_drawdown) : "—", "red") : kp("Open now", (r.open || []).length)}
+    </div>
+    ${(r.by_lot || []).length > 1 ? `<div class="row xs">${r.by_lot.map(x => `<span class="chip">lot ${x.lot} (target ${(lotT => lotT ? lotT + "×" : "")((r.params.lot_targets || [])[x.lot - 1])}): <b>${x.count}</b> exits · <span class="${cls(x.sum)}">${inrS(x.sum)}</span></span>`).join(" ")}</div>` : ""}
+    ${(r.by_reason || []).length ? `<div class="row xs">${r.by_reason.map(x => `<span class="chip">${esc(znReason(x.exit_reason))}: <b>${x.count}</b> · <span class="${cls(x.sum)}">${inrS(x.sum)}</span></span>`).join(" ")}</div>` : ""}
+  </div>
+  ${range && days.length ? `<div class="grid2">
+    <div class="panel"><div class="panel-h"><h2>By day</h2></div><div class="tscroll tall"><table class="tbl"><thead><tr><th>Day</th><th class="r">Trades</th><th class="r">Win %</th><th class="r">Net</th><th class="r">Running</th></tr></thead><tbody>
+      ${(() => { let run = 0; return days.map(d => { run += d.net; return `<tr class="clk" data-zday="${esc(d.day)}"><td>${esc(fmtTs(d.day, { date: true }))}</td><td class="r">${d.trades}</td><td class="r">${d.win_rate ?? "—"}</td><td class="r ${cls(d.net)}">${inrS(d.net)}</td><td class="r ${cls(run)}">${inrS(run)}</td></tr>`; }).join(""); })()}</tbody></table></div></div>
+    <div class="panel"><div class="panel-h"><h2>By symbol</h2></div><div class="tscroll tall"><table class="tbl"><thead><tr><th>Symbol</th><th class="r">Trades</th><th class="r">Win %</th><th class="r">Net</th></tr></thead><tbody>
+      ${(r.by_symbol || []).map(x => `<tr class="clk" data-zsym="${esc(x.symbol)}"><td><b>${esc(x.symbol)}</b></td><td class="r">${x.trades}</td><td class="r">${x.win_rate ?? "—"}</td><td class="r ${cls(x.net)}">${inrS(x.net)}</td></tr>`).join("")}</tbody></table></div></div>
+  </div>` : ""}
+  <div class="panel"><div class="panel-h"><h2>Trades</h2><span class="t3 xs" id="zn-filter-note">click a row to see the chart with the zone, entries and exits</span><button type="button" class="sm" id="zn-clear" hidden>show all</button></div>
+    <div class="tscroll tall"><table class="tbl" id="zn-trades"><thead><tr><th>Symbol</th><th>Day</th><th class="r">#</th><th class="r">Lot</th><th>Side</th><th>Entry</th><th class="r">Entry price</th><th>Exit</th><th class="r">Exit price</th><th>Why</th><th class="r">Target</th><th class="r">Stop</th><th class="r">Qty</th><th class="r">Net</th><th></th></tr></thead><tbody>
+    ${tr.map(t => `<tr class="clk" data-zc="${esc(t.symbol)}|${esc(t.day)}" data-sym="${esc(t.symbol)}" data-day="${esc(t.day)}"><td><b>${esc(t.symbol)}</b></td><td class="mono">${esc(fmtTs(t.day, { date: true }))}</td><td class="r">${t.cycle}</td><td class="r">${t.lots > 1 ? `${t.lot}/${t.lots}` : "1"}</td>
+      <td><span class="pill ${t.side.toLowerCase()}">${t.side}</span></td><td class="mono">${esc(String(t.entry_ts).slice(11, 16))}</td><td class="r">${fmt(t.entry)}</td>
+      <td class="mono">${t.exit_ts ? esc(String(t.exit_ts).slice(11, 16)) : "—"}</td><td class="r">${t.exit != null ? fmt(t.exit) : (t.ltp != null ? fmt(t.ltp) + " ltp" : "—")}</td>
+      <td class="${t.exit_reason === "target" ? "green" : t.exit_reason === "stop_loss" ? "red" : ""}">${esc(znReason(t.exit_reason))}</td>
+      <td class="r">${fmt(t.target)}</td><td class="r">${fmt(t.stop)}</td><td class="r">${t.qty}</td><td class="r ${cls(t.net_pnl)}"><b>${inrS(t.net_pnl)}</b></td>
+      <td><button type="button" class="sm" aria-label="Chart">chart</button></td></tr>`).join("") || `<tr><td colspan="15" class="empty">No trades: see the reasons below.</td></tr>`}
+    </tbody></table></div></div>
+  ${(r.notes || []).length ? `<details class="panel"><summary><b>No trade (${r.notes.length})</b> <span class="t3 xs">symbol-days without an entry, and why</span></summary>
+    <div class="tscroll tall"><table class="tbl"><thead><tr><th>Symbol</th><th>Day</th><th>Why</th></tr></thead><tbody>
+    ${r.notes.map(n => `<tr ${n.day ? `class="clk" data-zc="${esc(n.symbol)}|${esc(n.day)}"` : ""}><td><b>${esc(n.symbol)}</b></td><td class="mono">${n.day ? esc(fmtTs(n.day, { date: true })) : "—"}</td><td class="wrap">${esc(n.note)}</td></tr>`).join("")}</tbody></table></div></details>` : ""}`;
+  markScrolls?.();
+  const filt = (attr, val, label) => {
+    $$("#zn-trades tbody tr[data-sym]").forEach(tr => tr.hidden = tr.dataset[attr] !== val);
+    $("#zn-filter-note").textContent = `showing ${label}`; $("#zn-clear").hidden = false;
+  };
+  $$("#zn-out [data-zday]").forEach(x => x.onclick = () => filt("day", x.dataset.zday, fmtTs(x.dataset.zday, { date: true })));
+  $$("#zn-out [data-zsym]").forEach(x => x.onclick = () => filt("sym", x.dataset.zsym, x.dataset.zsym));
+  $("#zn-clear").onclick = () => { $$("#zn-trades tbody tr").forEach(tr => tr.hidden = false); $("#zn-clear").hidden = true; $("#zn-filter-note").textContent = "click a row to see the chart with the zone, entries and exits"; };
+  $$("#zn-out [data-zc]").forEach(x => x.onclick = () => { const [s, d] = x.dataset.zc.split("|"); znChart(s, d); });
+  $$("#zn-cmp [data-zk]").forEach(x => x.onclick = () => znRender(ZN.full, +x.dataset.zk));
+}
+
+// ---------------------------------------------------------------- named watchlists
+let NAMED = {};
+async function loadNamed() { try { NAMED = await api("/api/watchlists"); } catch (e) { NAMED = {}; } fillListSelects(); return NAMED; }
+function fillListSelects() {
+  const opts = `<option value="">+ watchlist…</option>` + Object.entries(NAMED).map(([n, v]) => `<option value="${esc(n)}">${esc(n)} (${v.length})</option>`).join("");
+  $$(".sp-lists, #ts-list").forEach(sel => { const keep = sel.value; sel.innerHTML = opts; sel.value = ""; });
+}
+let NL_CUR = null;
+function nlRender() {
+  const names = Object.keys(NAMED);
+  $("#nl-list").innerHTML = names.length ? names.map(n => {
+    const v = NAMED[n], f = v.filter(x => x.endsWith("-FUT")).length;
+    return `<button type="button" class="nl-item${n === NL_CUR ? " on" : ""}" data-nl="${esc(n)}"><b>${esc(n)}</b><span class="t3 xs">${v.length - f} stocks · ${f} futures</span></button>`; }).join("")
+    : `<p class="t3 xs">No watchlists yet. Press <b>+ New</b>, give it a name, add stocks and futures, Save.</p>`;
+  $$("#nl-list [data-nl]").forEach(b => b.onclick = () => nlOpen(b.dataset.nl));
+}
+function nlOpen(name) {
+  NL_CUR = name;
+  $("#nl-title").textContent = name ? `Edit "${name}"` : "New watchlist";
+  $("#nl-name").value = name || "";
+  $("#nl-symbols").value = name ? (NAMED[name] || []).join(",") : "";
+  $("#nl-symbols").dispatchEvent(new Event("sp:refresh"));
+  $("#nl-del").hidden = !name; $("#nl-msg").textContent = ""; nlCount(); nlRender();
+}
+function nlCount() { const v = syms("#nl-symbols"); const f = v.filter(x => x.endsWith("-FUT")).length; $("#nl-count").textContent = `${v.length - f} stocks · ${f} futures`; }
+makeSymPicker($("#nl-symbols"));
+$("#nl-symbols").addEventListener("change", nlCount);
+$("#nl-new").onclick = () => { nlOpen(null); $("#nl-name").focus(); };
+$("#nl-save").onclick = async () => {
+  const name = $("#nl-name").value.trim(), symbols = syms("#nl-symbols");
+  if (!name) { $("#nl-msg").innerHTML = '<span class="red">give it a name</span>'; return; }
+  if (!symbols.length) { $("#nl-msg").innerHTML = '<span class="red">add at least one stock or future</span>'; return; }
+  try { NAMED = await api("/api/watchlists", { method: "PUT", json: { name, symbols, old_name: NL_CUR } }); fillListSelects(); nlOpen(name); toast(`Watchlist "${esc(name)}" saved (${symbols.length})`, "buy"); }
+  catch (e) { $("#nl-msg").innerHTML = `<span class="red">${esc(e.message)}</span>`; }
+};
+$("#nl-del").onclick = async () => {
+  if (!NL_CUR || !confirm(`Delete the watchlist "${NL_CUR}"? The stocks themselves are not touched.`)) return;
+  try { NAMED = await api(`/api/watchlists/${encodeURIComponent(NL_CUR)}`, { method: "DELETE" }); fillListSelects(); nlOpen(null); } catch (e) { toast(esc(e.message), "err"); }
+};
+document.addEventListener("change", e => {
+  const sel = e.target.closest(".sp-lists"); if (!sel || !sel.value) return;
+  const inp = sel.closest(".sp")?.previousElementSibling; const v = NAMED[sel.value] || [];
+  if (inp) { inp.value = [...new Set([...inp.value.split(",").map(x => x.trim().toUpperCase()).filter(Boolean), ...v])].join(","); inp.dispatchEvent(new Event("change")); inp.dispatchEvent(new Event("sp:refresh")); }
+  sel.value = "";
+});
+$("#ts-list").onchange = () => {
+  const v = NAMED[$("#ts-list").value]; $("#ts-list").value = ""; if (!v) return;
+  const futs = v.filter(x => x.endsWith("-FUT"));
+  TS.sel = new Set(v);
+  $("#ts-seg-eq").checked = v.some(x => !x.endsWith("-FUT")); $("#ts-seg-fut").checked = futs.length > 0;
+  if (futs.some(x => !TS.futures.includes(x))) $("#ts-allfut").checked = true;
+  tsRender();
+};
+loadNamed().then(nlRender);
+
+// ---------------------------------------------------------------- YONEXIS AI configurations
+let ZCFG = [{ max_cycles: 2, lot_targets: [1.5], target_base: "zone", spike: true }];
+const ZBASES = { zone: "Zone (zone candle H−L)", iz: "IZ (entry candle H−L)" };
+function zcfgRender() {
+  $("#zn-cfgs tbody").innerHTML = ZCFG.map((c, i) => `<tr data-i="${i}"><td class="t3">${i + 1}</td>
+    <td><input type="number" class="sm zc-cyc" min="1" max="10" step="1" value="${c.max_cycles}" aria-label="Max entries per day"></td>
+    <td><select class="sm zc-base" aria-label="Target multiplier">${Object.entries(ZBASES).map(([k, v]) => `<option value="${k}"${(c.target_base || "zone") === k ? " selected" : ""}>${v}</option>`).join("")}</select></td>
+    <td><input type="checkbox" class="zc-spike" ${c.spike !== false ? "checked" : ""} aria-label="Spike"></td>
+    <td><input type="number" class="sm zc-lots" min="1" max="10" step="1" value="${c.lot_targets.length}" aria-label="Lots per entry"></td>
+    <td><div class="zc-tg">${c.lot_targets.map((t, k) => `<label class="xs t3">lot ${k + 1} <input type="number" class="sm zc-t" data-k="${k}" min="0.1" max="20" step="0.1" value="${t}" aria-label="Target for lot ${k + 1}"></label>`).join("")}</div></td>
+    <td>${ZCFG.length > 1 ? `<button type="button" class="sm zc-rm" aria-label="Remove configuration">×</button>` : ""}</td></tr>`).join("");
+  $$("#zn-cfgs tbody tr").forEach(tr => {
+    const c = ZCFG[+tr.dataset.i];
+    tr.querySelector(".zc-cyc").onchange = e => { c.max_cycles = Math.max(1, Math.min(10, parseInt(e.target.value) || 1)); };
+    tr.querySelector(".zc-lots").onchange = e => { const n = Math.max(1, Math.min(10, parseInt(e.target.value) || 1));
+      while (c.lot_targets.length < n) c.lot_targets.push(+(c.lot_targets.at(-1) + 1).toFixed(2)); c.lot_targets.length = n; zcfgRender(); };
+    tr.querySelectorAll(".zc-t").forEach(inp => inp.onchange = () => { c.lot_targets[+inp.dataset.k] = Math.max(0.1, parseFloat(inp.value) || 1); });
+    tr.querySelector(".zc-base").onchange = e => { c.target_base = e.target.value; };
+    tr.querySelector(".zc-spike").onchange = e => { c.spike = e.target.checked; };
+    tr.querySelector(".zc-rm")?.addEventListener("click", () => { ZCFG.splice(+tr.dataset.i, 1); zcfgRender(); });
+  });
+}
+$("#zn-add").onclick = () => { const l = ZCFG.at(-1); ZCFG.push({ max_cycles: l.max_cycles, lot_targets: l.lot_targets.map(x => +(x + 0.5).toFixed(2)), target_base: l.target_base, spike: l.spike }); zcfgRender(); };
+zcfgRender();
+
+// ---------------------------------------------------------------- data check (verify + refetch missing)
+const DC = { r: null, only: true };
+async function dcSummary() {
+  try {
+    const r = await api("/api/data/check/summary");
+    $("#dc-sum tbody").innerHTML = r.intervals.map(x => `<tr><td><b>${esc(x.interval)}</b></td><td class="r">${x.symbols}</td><td class="r">${x.stocks}</td><td class="r">${x.futures}</td>
+      <td class="r">${Number(x.candles).toLocaleString("en-IN")}</td><td class="mono">${esc(fmtTs(x.first))}</td><td class="mono">${esc(fmtTs(x.last))}</td></tr>`).join("")
+      || `<tr><td colspan="7" class="empty">Nothing stored yet - use Download real history above.</td></tr>`;
+    const l = r.last_check;
+    $("#dc-last").textContent = l ? `last check ${fmtTs(l.at)}: ${l.totals.ok}/${l.totals.checked} complete, ${l.totals.missing_days} missing days, ${l.totals.missing_candles} missing candles` : "not checked yet";
+  } catch (e) { $("#dc-sum tbody").innerHTML = `<tr><td colspan="7" class="red">${esc(e.message)}</td></tr>`; }
+}
+makeSymPicker($("#dc-symbols")); makeIvPicker($('.iv-pick[data-for="dc-interval"]'));
+$("#dc-end").value = new Date().toISOString().slice(0, 10);
+const DC_TONE = { ok: "pass", gaps: "fail", "thin trading": "review", "no data": "fail", "broken rows": "fail" };
+const DC_TXT = { ok: "complete", gaps: "gaps", "thin trading": "thin trading", "no data": "no data", "broken rows": "broken rows" };
+function dcRender(r, extra) {
+  DC.r = r;
+  const T = r.totals, rows = r.rows.slice().sort((a, b) => (a.status === "ok") - (b.status === "ok") || a.symbol.localeCompare(b.symbol));
+  const fixable = r.rows.filter(x => x.missing_days.length || x.incomplete.length);
+  const nDays = fixable.reduce((s, x) => s + x.missing_days.length + x.incomplete.length, 0);
+  const kp = (k, v, c = "", s = "") => `<div class="card"><div class="k">${k}</div><div class="v ${c}">${v}</div>${s ? `<div class="s">${s}</div>` : ""}</div>`;
+  const shown = DC.only ? rows.filter(x => x.status !== "ok") : rows;
+  $("#dc-out").innerHTML = `${extra || ""}
+    <div class="ts-h" style="margin-top:12px">3. Result <span class="t3 xs">${esc(fmtTs(r.start, { date: true }))} → ${esc(fmtTs(r.end, { date: true }))} · ${T.trading_days} trading days (holidays learnt from the NIFTY index)</span></div>
+    <div class="cards zcards">${kp("Complete", `${T.ok}/${T.checked}`, T.ok === T.checked ? "green" : "")}${kp("Missing days", T.missing_days, T.missing_days ? "red" : "green")}
+      ${kp("Incomplete days", T.incomplete_days, T.incomplete_days ? "red" : "green", `${Number(T.missing_candles).toLocaleString("en-IN")} candles missing`)}
+      ${kp("Thin trading", T.thin, T.thin ? "amber" : "", `${Number(T.flat_candles).toLocaleString("en-IN")} no-trade candles`)}${kp("No data / broken", `${T.no_data} / ${T.broken}`, T.no_data + T.broken ? "red" : "")}</div>
+    <div class="row">${fixable.length ? `<button type="button" class="primary" id="dc-fix">Refetch missing only (${fixable.length} series, ${nDays} days)</button>` : `<span class="green">Nothing missing that Upstox could fill.</span>`}
+      <label class="chk xs"><input type="checkbox" id="dc-only" ${DC.only ? "checked" : ""}> show only problems</label><span id="dc-fixmsg" class="t3"></span></div>
+    <div class="progress" id="dc-fixbar" hidden><div style="width:0%"></div></div>
+    <div class="tscroll tall"><table class="tbl" id="dc-rows"><thead><tr><th>Symbol</th><th>Interval</th><th>Status</th><th class="r">Days</th><th class="r">Missing days</th><th class="r">Incomplete days</th><th class="r">No-trade candles</th><th class="r">Broken</th><th>From → to</th></tr></thead><tbody>
+    ${shown.map((x, i) => `<tr class="clk" data-dci="${r.rows.indexOf(x)}"><td><b>${esc(x.symbol)}</b></td><td>${esc(x.interval)}</td><td><span class="pill ${DC_TONE[x.status] || ""}">${esc(DC_TXT[x.status] || x.status)}</span></td>
+      <td class="r">${x.days}/${x.expected_days}</td><td class="r ${x.missing_days.length ? "red" : ""}">${x.missing_days.length}</td>
+      <td class="r ${x.incomplete.length ? "red" : ""}">${x.incomplete.length}${x.incomplete.length ? `<span class="t3 xs"> (${x.incomplete.reduce((s, i) => s + i.missing, 0)} candles)</span>` : ""}</td>
+      <td class="r ${x.flat_zero_vol ? "amber" : ""}">${x.flat_zero_vol}</td><td class="r ${x.broken ? "red" : ""}">${x.broken}</td>
+      <td class="mono xs">${x.first ? esc(fmtTs(x.first, { date: true })) + " → " + esc(fmtTs(x.last, { date: true })) : "—"}</td></tr>`).join("") || `<tr><td colspan="9" class="empty">All checked series are complete.</td></tr>`}
+    </tbody></table></div><div id="dc-detail"></div>
+    <details class="lab-how"><summary>What the statuses mean</summary><ul class="t2 xs">
+      <li><b>gaps</b>: trading days with no candles, or days missing some 5-minute slots. Refetching from Upstox usually fixes these.</li>
+      <li><b>thin trading</b>: candles where nothing traded (open = high = low = close, volume 0). A futures symbol always means the current near-month contract; its history goes back to when that contract was listed, and while it was the far month it hardly traded, which looks like flat dashes on the chart. Refetching cannot fix that: the trades never happened. Backtest futures only from the date the contract became the near month (about the last month before expiry).</li>
+      <li><b>broken rows</b>: a high below the open/close, a low above it, or a zero price. <b>Jumps</b> over 12% between candles are listed in the details (splits, bonus issues or bad ticks).</li></ul></details>`;
+  $("#dc-only").onchange = () => { DC.only = $("#dc-only").checked; dcRender(DC.r); };
+  $$("#dc-rows [data-dci]").forEach(tr => tr.onclick = () => {
+    const x = r.rows[+tr.dataset.dci];
+    $("#dc-detail").innerHTML = `<div class="panel"><div class="panel-h"><h2>${esc(x.symbol)} ${esc(x.interval)}</h2><button type="button" class="sm" onclick="this.closest('.panel').remove()">close</button></div>
+      ${x.missing_days.length ? `<p class="xs"><b>Missing days (${x.missing_days.length}):</b> ${x.missing_days.map(esc).join(", ")}</p>` : ""}
+      ${x.incomplete.length ? `<p class="xs"><b>Incomplete days:</b></p><ul class="xs">${x.incomplete.slice(0, 60).map(i => `<li>${esc(i.day)}: ${i.missing} of ${i.of} candles missing (${i.times.map(esc).join(", ")})</li>`).join("")}</ul>` : ""}
+      ${x.flat_days.length ? `<p class="xs"><b>Days with many no-trade candles:</b> ${x.flat_days.map(d => `${esc(d.day)} (${d.candles})`).join(", ")}</p>` : ""}
+      ${x.jumps.length ? `<p class="xs"><b>Jumps over 12%:</b> ${x.jumps.map(j => `${esc(fmtTs(j.ts))} ${j.pct}%`).join(", ")}</p>` : ""}
+      ${!x.missing_days.length && !x.incomplete.length && !x.flat_days.length && !x.jumps.length ? '<p class="green xs">No problems found.</p>' : ""}</div>`;
+    $("#dc-detail").scrollIntoView({ behavior: "smooth", block: "nearest" });
+  });
+  $("#dc-fix")?.addEventListener("click", async () => {
+    if (!confirm(`Refetch ${nDays} missing or incomplete days for ${fixable.length} series from Upstox, then check again?`)) return;
+    try { const { job_id } = await api("/api/data/check/repair", { method: "POST" }); dcFollowRepair(job_id); }
+    catch (e) { $("#dc-fixmsg").innerHTML = `<span class="red">${esc(e.message)}</span>`; }
+  });
+}
+async function dcFollowRepair(jid) {
+  $("#dc-fixbar").hidden = false; $("#dc-fix") && ($("#dc-fix").disabled = true);
+  const j = await pollJob(jid, j => { const l = j.log.at(-1) || {}; $("#dc-fixbar > div").style.width = `${l.total ? Math.round(l.done / l.total * 100) : 5}%`; $("#dc-fixmsg").innerHTML = `<span class="spin"></span> ${esc(j.stage)}`; });
+  if (j.status !== "done") { $("#dc-fixmsg").innerHTML = `<span class="red">${esc(j.error || "failed")}</span>`; $("#dc-fixbar").hidden = true; return; }
+  const o = j.result, saved = o.refetched.reduce((s, x) => s + (x.saved || 0), 0), b = DC.r.totals, a = o.after.totals;
+  const extra = `<div class="panel ${a.missing_days + a.incomplete_days ? "" : "ai-card champ"}"><div class="panel-h"><h2>Refetch done</h2></div>
+    <p class="xs">Saved <b>${Number(saved).toLocaleString("en-IN")}</b> candles. Missing days ${b.missing_days} → <b>${a.missing_days}</b>, incomplete days ${b.incomplete_days} → <b>${a.incomplete_days}</b>, missing candles ${b.missing_candles} → <b>${a.missing_candles}</b>.
+    ${a.missing_days + a.incomplete_days ? " What is still missing is not available from Upstox (no trading in those slots, or the contract was not listed yet)." : " The checked data is now complete."}</p>
+    ${o.errors.length ? `<p class="red xs">${o.errors.length} request(s) failed: ${o.errors.slice(0, 5).map(e => esc(`${e.symbol} ${e.range}: ${e.error}`)).join("; ")}</p>` : ""}</div>`;
+  dcRender(o.after, extra); dcSummary(); loadInventory();
+}
+$("#dc-go").onclick = async () => {
+  const body = { symbols: syms("#dc-symbols"), intervals: ivList("#dc-interval"), start: $("#dc-start").value || "2024-01-01", end: $("#dc-end").value || null };
+  $("#dc-bar").hidden = false; $("#dc-go").disabled = true;
+  try {
+    const { job_id } = await api("/api/data/check", { json: body });
+    const j = await pollJob(job_id, j => { const l = j.log.at(-1) || {}; $("#dc-bar > div").style.width = `${l.total ? Math.round(l.done / l.total * 100) : 5}%`; $("#dc-msg").innerHTML = `<span class="spin"></span> ${esc(j.stage)}`; });
+    if (j.status !== "done") throw new Error(j.error || "failed");
+    $("#dc-msg").textContent = ""; dcRender(j.result); dcSummary();
+  } catch (e) { $("#dc-msg").innerHTML = `<span class="red">${esc(e.message)}</span>`; }
+  $("#dc-bar").hidden = true; $("#dc-go").disabled = false;
+};
+api("/api/jobs/latest/data_check").then(j => { if (j && j.status === "done" && j.result && j.result.rows) dcRender(j.result); }).catch(() => {});
+
+// ---------------------------------------------------------------- continuous futures (Upstox Plus)
+makeSymPicker($("#fc-symbols")); makeIvPicker($('.iv-pick[data-for="fc-interval"]'));
+async function fcCheck() {
+  $("#fc-check-msg").innerHTML = '<span class="spin"></span> asking Upstox…';
+  try { const r = await api("/api/upstox/plan-check");
+    $("#fc-plan").innerHTML = r.plus ? '<span class="pill pass">Upstox Plus active</span>' : r.plus === false ? '<span class="pill fail">Upstox Plus not active</span>' : '<span class="pill review">unknown</span>';
+    $("#fc-check-msg").innerHTML = `<span class="${r.ok ? "green" : "red"}">${esc(r.message)}</span>${r.sample ? ` <span class="t3">(e.g. ${esc(r.sample)})</span>` : ""}`;
+  } catch (e) { $("#fc-check-msg").innerHTML = `<span class="red">${esc(e.message)}</span>`; }
+}
+$("#fc-check").onclick = fcCheck;
+function fcRender(o) {
+  const rows = o.results || [];
+  $("#fc-out").innerHTML = `<div class="tscroll tall"><table class="tbl"><thead><tr><th>Future</th><th class="r">Contracts joined</th><th>Covers</th><th class="r">Candles saved</th><th>Problems</th></tr></thead><tbody>
+    ${rows.map((r, i) => { const sg = r.segments || [], saved = Object.entries(r.candles || {}).map(([k, v]) => `${k}: ${Number(v).toLocaleString("en-IN")}`).join(" · ");
+      return `<tr class="clk" data-fci="${i}"><td><b>${esc(r.symbol)}</b></td><td class="r">${sg.length}</td><td class="mono xs">${sg.length ? esc(fmtTs(sg[0].from, { date: true })) + " → " + esc(fmtTs(sg.at(-1).to, { date: true })) : "—"}</td>
+        <td class="r">${saved || "—"}</td><td class="${(r.errors || []).length ? "red" : "green"} xs">${(r.errors || []).length ? `${r.errors.length}: ${esc(r.errors[0].error)}` : "none"}</td></tr>`; }).join("")}</tbody></table></div><div id="fc-detail"></div>`;
+  $$("#fc-out [data-fci]").forEach(tr => tr.onclick = () => { const r = rows[+tr.dataset.fci];
+    $("#fc-detail").innerHTML = `<div class="tscroll"><table class="tbl"><thead><tr><th>Contract</th><th>Expiry</th><th>Used for</th><th class="r">Candles</th></tr></thead><tbody>
+      ${(r.segments || []).map(s => `<tr><td>${esc(s.trading_symbol || s.key || "")}${s.kind === "current" ? ' <span class="pill pass xs">current</span>' : ""}</td><td class="mono">${esc(s.expiry)}</td><td class="mono xs">${esc(s.from)} → ${esc(s.to)}</td><td class="r">${Object.values(s.candles || {}).join(" / ") || "0"}</td></tr>`).join("")}</tbody></table></div>`; });
+}
+$("#fc-go").onclick = async () => {
+  if (!confirm("Rebuild the stored history of these futures from the near-month contracts (replaces the stored candles in that period)?")) return;
+  $("#fc-bar").hidden = false; $("#fc-go").disabled = true;
+  try {
+    const { job_id } = await api("/api/data/futures-continuous", { json: { symbols: syms("#fc-symbols"), start: $("#fc-start").value || "2024-01-01", intervals: ivList("#fc-interval"), roll_days: parseInt($("#fc-roll").value) || 0 } });
+    const j = await pollJob(job_id, j => { const l = j.log.slice().reverse().find(x => x.total) || {}; $("#fc-bar > div").style.width = `${l.total ? Math.round(l.done / l.total * 100) : 5}%`; $("#fc-msg").innerHTML = `<span class="spin"></span> ${esc(j.stage)}`; });
+    if (j.status !== "done") throw new Error(j.error || "failed");
+    $("#fc-msg").innerHTML = `<span class="green">done: ${j.result.results.length} futures rebuilt</span> <span class="t3">- run Data check to confirm</span>`; fcRender(j.result); loadInventory(); dcSummary();
+  } catch (e) { $("#fc-msg").innerHTML = `<span class="red">${esc(e.message)}</span>`; }
+  $("#fc-bar").hidden = true; $("#fc-go").disabled = false;
+};
+api("/api/jobs/latest/fut_cont").then(j => { if (j && j.status === "done" && j.result) fcRender(j.result); }).catch(() => {});

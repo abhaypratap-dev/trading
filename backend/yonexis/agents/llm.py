@@ -14,6 +14,8 @@ class LLMError(RuntimeError):
 
 
 def chat(messages: list[dict], temperature: float = 0.2, max_tokens: int = 4000, model: str | None = None) -> str:
+    if not settings.LLM_ENABLED:
+        raise LLMError("the AI model is switched off in this deployment (LLM_ENABLED=false) - use the local version for AI writing features")
     url = settings.LLM_BASE_URL.rstrip("/") + "/chat/completions"
     body = {"model": model or settings.LLM_MODEL, "messages": messages, "temperature": temperature,
             "max_tokens": max_tokens, "stream": False}
@@ -73,6 +75,8 @@ def extract_code(text: str) -> str:
 
 
 def health() -> dict:
+    if not settings.LLM_ENABLED:
+        return {"ok": False, "disabled": True, "model": None, "error": "switched off in this deployment (LLM_ENABLED=false)"}
     try:
         base = settings.LLM_BASE_URL.rstrip("/")
         r = httpx.get(base + "/models", timeout=5, headers={"Authorization": f"Bearer {settings.LLM_API_KEY}"})

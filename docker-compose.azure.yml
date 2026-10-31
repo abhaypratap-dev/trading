@@ -1,0 +1,15 @@
+# Cloud (Azure VM) overrides: no AI model server, so the AI writing features are switched off.
+#   docker compose -f docker-compose.yml -f docker-compose.azure.yml up -d --build
+# The dashboard stays bound to 127.0.0.1:8000 on the VM (not public). Open it through an SSH tunnel:
+#   ssh -N -L 8000:localhost:8000 <user>@<vm-ip>   ->   http://localhost:8000
+# (the Upstox login redirect to http://localhost:8000 keeps working through the tunnel).
+services:
+  api:
+    environment:
+      LLM_ENABLED: "false"
+  scheduler:
+    environment:
+      LLM_ENABLED: "false"
+  sandbox:
+    environment:
+      LLM_ENABLED: "false"

@@ -19,6 +19,9 @@ class Settings:
     LLM_API_KEY = os.getenv("LLM_API_KEY", "ollama")
     LLM_MODEL = os.getenv("LLM_MODEL", "qwen2.5-coder:7b")
     LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "300"))
+    # false = cloud deployment without a model server: the AI writing features (strategy writer, converter, critic,
+    # reports, feedback analyst) are switched off and hidden. The AI picker (LightGBM) and all strategies still run.
+    LLM_ENABLED = os.getenv("LLM_ENABLED", "true").strip().lower() not in ("0", "false", "no", "off")
 
     # Live loop
     LIVE_CONNECTOR = os.getenv("LIVE_CONNECTOR", "simulated")     # simulated | yahoo | kite | upstox

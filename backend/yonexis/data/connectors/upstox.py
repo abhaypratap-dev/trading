@@ -38,7 +38,8 @@ INSTRUMENTS_URL = "https://assets.upstox.com/market-quote/instruments/exchange/N
 IST_OFFSET = pd.Timedelta(hours=5, minutes=30)
 
 INDEX_KEYS = {"NIFTY": "NSE_INDEX|Nifty 50", "NIFTY50": "NSE_INDEX|Nifty 50", "BANKNIFTY": "NSE_INDEX|Nifty Bank",
-              "INDIAVIX": "NSE_INDEX|India VIX", "FINNIFTY": "NSE_INDEX|Nifty Fin Service"}
+              "INDIAVIX": "NSE_INDEX|India VIX", "FINNIFTY": "NSE_INDEX|Nifty Fin Service",
+              "MIDCPNIFTY": "NSE_INDEX|NIFTY MID SELECT"}
 
 
 class UpstoxError(RuntimeError):
@@ -165,7 +166,7 @@ class Instruments:
     """
 
     def __init__(self, cache: Path | None = None):
-        self.cache = cache or settings.DATA_DIR / "upstox_nse_instruments_v2.json"
+        self.cache = cache or settings.DATA_DIR / "upstox_nse_instruments_v3.json"
         self._by_symbol: dict[str, dict] = {}
         self._by_key: dict[str, str] = {}
         self._futs: dict[str, list[dict]] = {}
@@ -187,7 +188,8 @@ class Instruments:
                          "l": x.get("lot_size", 1)}
                         for x in raw if x.get("segment") == "NSE_EQ" and x.get("instrument_type") == "EQ"]
                 rows += [{"s": _fut_underlying(x) + FUT_SUFFIX, "k": x["instrument_key"], "n": x.get("trading_symbol"),
-                          "t": x.get("tick_size"), "l": int(x.get("lot_size") or 1), "e": _expiry_date(x.get("expiry")), "f": 1}
+                          "t": x.get("tick_size"), "l": int(x.get("lot_size") or 1), "e": _expiry_date(x.get("expiry")), "f": 1,
+                          "u": x.get("underlying_key")}
                          for x in raw if x.get("segment") == "NSE_FO" and x.get("instrument_type") == "FUT"]
                 self.cache.write_text(json.dumps(rows))
             eq = [r for r in rows if not r.get("f")]
@@ -214,6 +216,21 @@ class Instruments:
             raise UpstoxError(f"{symbol}: no NSE futures contract for {s[:-len(FUT_SUFFIX)]} in the Upstox instrument list")
         r = self._futs[s][0]
         return {"symbol": s, "trading_symbol": r["n"], "instrument_key": r["k"], "expiry": r["e"], "lot_size": int(r["l"] or 1)}
+
+    def underlying_key(self, symbol: str) -> str:
+        """Instrument key of a future's underlying (NSE_INDEX|Nifty 50, NSE_EQ|INE...): needed for expired contracts."""
+        self._load()
+        s = symbol.upper()
+        v = self._futs.get(s) or []
+        u = next((r.get("u") for r in v if r.get("u")), None)
+        if u:
+            return u
+        base = s[:-len(FUT_SUFFIX)] if s.endswith(FUT_SUFFIX) else s
+        if base in INDEX_KEYS:
+            return INDEX_KEYS[base]
+        if base in self._by_symbol:
+            return self._by_symbol[base]["k"]
+        raise UpstoxError(f"{symbol}: underlying instrument not found")
 
     def lot_size(self, symbol: str) -> int:
         return self.contract(symbol)["lot_size"] if is_future(symbol) else 1
@@ -318,8 +335,50 @@ class UpstoxConnector(Connector):
             return _json(r)
         raise UpstoxError("Upstox rate limit (429) - try again in a minute")
 
+    # ------------------------------------------------------------------ expired contracts (Upstox Plus)
+    EXPIRED_IV = {"1m": "1minute", "3m": "3minute", "5m": "5minute", "15m": "15minute", "30m": "30minute", "1d": "day"}
+
+    def expiries(self, underlying_key: str) -> list[str]:
+        body = self._get(f"{API}/v2/expired-instruments/expiries", instrument_key=underlying_key)
+        return sorted(str(x)[:10] for x in (body.get("data") or []))
+
+    def expired_futures(self, underlying_key: str, expiry: str) -> list[dict]:
+        body = self._get(f"{API}/v2/expired-instruments/future/contract", instrument_key=underlying_key, expiry_date=expiry)
+        return list(body.get("data") or [])
+
+    def expired_candles(self, expired_key: str, start: str, end: str, interval: str = "5m") -> pd.DataFrame:
+        iv = self.EXPIRED_IV.get(interval)
+        if not iv:
+            raise UpstoxError(f"interval {interval} is not offered for expired contracts")
+        s, e = pd.Timestamp(start).date(), pd.Timestamp(end).date()
+        step = timedelta(days=27) if iv in ("1minute", "3minute", "5minute", "15minute") else timedelta(days=360)
+        key = quote(expired_key, safe="")
+        frames, cur_end = [], e
+        while cur_end >= s:
+            cur_start = max(s, cur_end - step)
+            body = self._get(f"{API}/v2/expired-instruments/historical-candle/{key}/{iv}/{cur_end}/{cur_start}")
+            frames.append(_parse_candles(body.get("data", {}).get("candles", [])))
+            cur_end = cur_start - timedelta(days=1)
+        frames = [f for f in frames if not f.empty]
+        if not frames:
+            return pd.DataFrame()
+        df = pd.concat(frames)
+        return df[~df.index.duplicated(keep="last")].sort_index()
+
     # ------------------------------------------------------------------ candles
     def fetch_history(self, symbol: str, start: str, end: str, interval: str = "5m") -> pd.DataFrame:
+        """Candles for a symbol. A future (NIFTY-FUT) means the near month at every date: past dates come from the
+        contract that was the near month then (expired contracts, Upstox Plus), never from today's contract, whose
+        early life as a far-month contract is full of flat no-trade candles."""
+        if is_future(symbol):
+            try:
+                from yonexis import futcont
+                return futcont.fetch_range(self, symbol, start, end, interval)
+            except Exception as e:                       # no Upstox Plus / lookup failed: current contract only
+                log.info("continuous futures fetch for %s failed (%s): using the current contract", symbol, e)
+        return self._fetch_history_raw(symbol, start, end, interval)
+
+    def _fetch_history_raw(self, symbol: str, start: str, end: str, interval: str = "5m") -> pd.DataFrame:
         key = quote(instruments.key(symbol), safe="")
         unit, n = _unit_interval(interval)
         s, e = pd.Timestamp(start).date(), pd.Timestamp(end).date()

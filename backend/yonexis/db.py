@@ -218,13 +218,30 @@ def save_candles(symbol: str, df: pd.DataFrame, interval: str, source: str) -> i
     d["ts"] = pd.to_datetime(d["ts"])
     d["symbol"], d["interval"], d["source"] = symbol.upper(), interval, source
     rows = d[["symbol", "interval", "ts", "open", "high", "low", "close", "volume", "source"]].to_dict("records")
+    # replace only the span of each session present in df. (Deleting the whole first..last span wiped every day in between, e.g. a
+    # chart asking Upstox for two holidays weeks apart replaced the continuous futures history of the weeks between.)
+    spans = d.groupby(d["ts"].dt.normalize())["ts"].agg(["min", "max"])
     with engine.begin() as cx:
-        lo, hi = d["ts"].min(), d["ts"].max()
-        cx.execute(candles.delete().where(candles.c.symbol == symbol.upper(), candles.c.interval == interval,
-                                          candles.c.ts >= lo, candles.c.ts <= hi))
+        for _, sp in spans.iterrows():
+            cx.execute(candles.delete().where(candles.c.symbol == symbol.upper(), candles.c.interval == interval,
+                                              candles.c.ts >= sp["min"].to_pydatetime(), candles.c.ts <= sp["max"].to_pydatetime()))
         for k in range(0, len(rows), 5000):
             cx.execute(insert(candles), rows[k:k + 5000])
     return len(rows)
+
+
+def square_off_time() -> str:
+    """Admin's intraday square-off time (HH:MM) for the paper engine, rebuilds and backtests. Default 15:15."""
+    import time as _tm
+    if _SQ_CACHE and _tm.time() - _SQ_CACHE[0] < 20:
+        return _SQ_CACHE[1]
+    v = get_setting("square_off_time")
+    v = v if isinstance(v, str) and len(v) == 5 else "15:15"
+    _SQ_CACHE[:] = [_tm.time(), v]
+    return v
+
+
+_SQ_CACHE: list = []
 
 
 def load_candles(symbol: str, interval: str = "5m", start: str | None = None, end: str | None = None,

@@ -29,15 +29,24 @@ def _conn(engine):
     return UpstoxConnector()
 
 
+_FETCH_ERR: dict[str, str] = {}
+
+
 def _day_candles(engine, sym: str, day: pd.Timestamp, interval: str, is_today: bool) -> pd.DataFrame:
     """Upstox's own candles of one session at `interval` (1m or 5m): intraday API for today, history API for a past
     day, the database as fallback. Only completed candles."""
     frames = []
     try:
         c = _conn(engine)
-        frames.append(c.intraday(sym, interval) if is_today else c.fetch_history(sym, str(day.date()), str(day.date()), interval))
-    except Exception:
-        pass
+        got = c.intraday(sym, interval) if is_today else c.fetch_history(sym, str(day.date()), str(day.date()), interval)
+        frames.append(got)
+        if not is_today and got is not None and not got.empty:
+            try:                                   # keep it, so the same day replays later without Upstox
+                db.save_candles(sym, got, interval, "upstox")
+            except Exception:
+                pass
+    except Exception as e:
+        _FETCH_ERR[sym] = str(e)[:160]
     if is_today and interval == "1m":
         feed = getattr(engine, "feed", None) if engine else None
         if feed is not None:
@@ -171,14 +180,18 @@ def rebuild(engine, progress=lambda *a: None, scope: dict | None = None, date: s
         raise RuntimeError("no strategy is in paper status (Strategies tab)")
 
     # ---------------------------------------------------------------- data first (nothing is changed if this fails)
-    data, src5 = {}, {}
+    data, src5, five_only = {}, {}, []
+    _FETCH_ERR.clear()
     for i, sym in enumerate(symbols):
         progress(f"loading {label}'s 5-minute (zone) and 1-minute (entries) candles {sym} ({i + 1}/{len(symbols)})",
                  {"done": i, "total": len(symbols)})
         one = _day_candles(engine, sym, day, "1m", is_today)
+        five = _day_candles(engine, sym, day, interval, is_today)                    # Upstox's own 5-minute candles
+        if one.empty and not five.empty:
+            one = five.copy()                 # no 1-minute candles anywhere: entries/exits on the 5-minute candles
+            five_only.append(sym)
         if one.empty:
             continue
-        five = _day_candles(engine, sym, day, interval, is_today)                    # Upstox's own 5-minute candles
         src5[sym] = "upstox"
         if five.empty:                                                                # fallback: built from the 1-minute ones
             five, src5[sym] = _resample(one, minutes), "built from 1m"
@@ -187,7 +200,9 @@ def rebuild(engine, progress=lambda *a: None, scope: dict | None = None, date: s
         df = pd.concat([f for f in (hist, five) if not f.empty])
         data[sym] = (df[~df.index.duplicated(keep="last")].sort_index(), one)
     if not data:
-        raise RuntimeError(f"no 1-minute candles for {label} (is Upstox logged in? holiday?)")
+        err = next(iter(_FETCH_ERR.values()), None)
+        raise RuntimeError(f"no candles for {label} in Upstox or in stored data"
+                           + (f" - Upstox said: {err}" if err else " (holiday? or log in to Upstox on the Data tab)"))
 
     # ---------------------------------------------------------------- replay every stock with the current logic
     cfg = BacktestConfig(capital_per_trade=min(risk.limits.capital_per_trade, risk.limits.max_capital_per_symbol),
@@ -198,7 +213,7 @@ def rebuild(engine, progress=lambda *a: None, scope: dict | None = None, date: s
         params = db.uj(row["params"], {}) or {}
         for sym, (df, one) in data.items():
             progress(f"replaying {sym} with {row['name']} v{row['version']}", {})
-            res = run_backtest(cls, {sym: df}, params, cfg, exec_bars={sym: one})
+            res = run_backtest(cls, {sym: df}, {**params, "_square_off": db.square_off_time()}, cfg, exec_bars={sym: one})
             t = res.trades
             t = t[(pd.to_datetime(t["entry_ts"]) >= day) & (pd.to_datetime(t["entry_ts"]) < day + pd.Timedelta(days=1))] if not t.empty else t
             sig_tags = {(str(pd.Timestamp(sg["ts"])), sg["side"]): sg.get("tags") or {} for sg in res.signals}
@@ -340,6 +355,8 @@ def rebuild(engine, progress=lambda *a: None, scope: dict | None = None, date: s
     out = {"at": datetime.now().isoformat(timespec="seconds"), "date": str(day.date()), "is_today": is_today,
            "zone_candles": ("Upstox 5-minute" if all(v == "upstox" for v in src5.values()) else
                             f"Upstox 5-minute ({sum(v != 'upstox' for v in src5.values())} built from 1-minute)"),
+           "entries_note": (f"{len(five_only)} instruments had no 1-minute candles, so entries/exits used their 5-minute candles: "
+                            + ", ".join(five_only[:8]) + ("…" if len(five_only) > 8 else "")) if five_only else None,
            "reset": reset, "stocks": len(data),
            "strategy": {"ai_pick": "AI pick", "pair_trading": "pair trading"}.get(special) or ", ".join(f"{r['name']} v{r['version']}" for r in strategies),
            "ai": ai_info, "pairs": pair_info,

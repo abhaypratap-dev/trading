@@ -213,3 +213,128 @@ def test_hari_master_block_detects_block_and_buys_the_retest():
     t = run_backtest(HariMasterBlock, {"X": df}, {"min_block_pct": 0.0}, BacktestConfig(slippage_bps=0)).trades
     assert len(t) >= 1 and t.iloc[0]["side"] == "BUY" and t.iloc[0]["entry"] == pytest.approx(round(b["top"], 2))
     assert t.iloc[0]["stop_loss"] < b["btm"]
+
+
+def test_zone_dashboard_rules():
+    import pandas as pd
+    from yonexis.zone_lab import run_day
+    day = pd.Timestamp("2026-10-30")
+    rows = [(100, 101, 99, 99.5), (99.5, 100.5, 99.2, 100), (100, 101.2, 99.8, 101), (101, 101.5, 98.8, 99),
+            (99, 99.5, 96.5, 97), (97, 97.2, 95.8, 96), (96, 99.3, 95.9, 99.2), (99.2, 100, 99.1, 99.8), (99.8, 101.3, 99.7, 101.1)]
+    idx = [day + pd.Timedelta(hours=9, minutes=15 + 5 * i) for i in range(len(rows))]
+    df = pd.DataFrame(rows, columns=["open", "high", "low", "close"], index=idx)
+    df["volume"] = 1.0
+    t = run_day("X", df, {"max_cycles": 2, "target_mult": 1.5, "include_costs": False})["trades"]
+    # zone 99-101 (range 2): BUY at 101, stopped at 99 (exact), relay SELL at 99, target 99 - 3 = 96 (exact)
+    assert [(x["side"], x["entry"], x["exit"], x["exit_reason"]) for x in t] == [("BUY", 101, 99, "stop_loss"), ("SELL", 99, 96, "target")]
+    t3 = run_day("X", df, {"max_cycles": 3, "target_mult": 1.5, "include_costs": False})["trades"]
+    assert t3[2]["side"] == "BUY" and t3[2]["entry_ts"].endswith("09:55:00")     # a fresh break of the zone, not the 09:45 retest
+    assert run_day("X", df, {"max_cycles": 1, "target_mult": 1.5})["trades"][0]["exit_reason"] == "stop_loss"
+
+
+def test_zone_dashboard_lots_with_own_targets():
+    import pandas as pd
+    from yonexis.zone_lab import run, run_day
+    day = pd.Timestamp("2026-10-30")
+    rows = [(100, 101, 99, 99.5), (99.5, 100.5, 99.2, 100), (100, 101.2, 99.8, 101), (101, 103.2, 100.9, 103),
+            (103, 105.5, 102.8, 105), (105, 105.2, 102, 102.5)]
+    idx = [day + pd.Timedelta(hours=9, minutes=15 + 5 * i) for i in range(len(rows))]
+    df = pd.DataFrame(rows, columns=["open", "high", "low", "close"], index=idx)
+    df["volume"] = 1.0
+    t = run_day("X", df, {"max_cycles": 1, "lot_targets": [1, 2], "include_costs": False})["trades"]
+    # zone 99-101 range 2: BUY at 101; lot 1 target 103 (hit 09:30), lot 2 target 105 (hit 09:35)
+    assert [(x["lot"], x["target"], x["exit"], x["exit_reason"], x["exit_ts"][11:16]) for x in t] == \
+        [(1, 103, 103, "target", "09:30"), (2, 105, 105, "target", "09:35")]
+
+
+def _zone_df(rows):
+    import pandas as pd
+    day = pd.Timestamp("2026-10-30")
+    idx = [day + pd.Timedelta(hours=9, minutes=15 + 5 * i) for i in range(len(rows))]
+    df = pd.DataFrame(rows, columns=["open", "high", "low", "close"], index=idx)
+    df["volume"] = 1.0
+    return df
+
+
+LOTS_ROWS = [(100, 101, 99, 99.5), (99.5, 100.5, 99.2, 100), (100, 101.2, 99.8, 101), (101, 103.2, 100.9, 103),
+             (103, 105.5, 102.8, 105), (105, 105.2, 102, 102.5)]
+
+
+def test_zone_target_base_iz():
+    from yonexis.zone_lab import run_day
+    df = _zone_df(LOTS_ROWS)
+    # BUY at 101 in the 09:25 candle (high 101.2, low 99.8, range 1.4), multiplier 1.5: target = entry + range x 1.5
+    iz = run_day("X", df, {"max_cycles": 1, "target_mult": 1.5, "target_base": "iz", "include_costs": False})["trades"][0]
+    assert iz["target"] == round(101 + 1.4 * 1.5, 2) and iz["exit_ts"][11:16] == "09:30" and iz["iz_range"] == 1.4
+    zn = run_day("X", df, {"max_cycles": 1, "target_mult": 1.5, "include_costs": False})["trades"][0]
+    assert zn["target"] == 104 and zn["exit_ts"][11:16] == "09:35"            # 101 + zone range 2 x 1.5
+
+
+def test_zone_spike_off_needs_open_or_close_outside():
+    from yonexis.zone_lab import run_day
+    rows = [(100, 101, 99, 99.5), (99.5, 100.5, 99.2, 100), (100, 101.2, 99.8, 101), (101, 101.5, 98.8, 99),
+            (99, 99.5, 96.5, 97), (97, 97.2, 95.8, 96), (96, 99.3, 95.9, 99.2)]
+    t = run_day("X", _zone_df(rows), {"max_cycles": 2, "target_mult": 1.5, "spike": False, "include_costs": False})["trades"]
+    # wicks above 101 / below 99 are ignored; the 09:35 candle CLOSES at 97 below 99 -> SELL at 97, target 97 - 2 x 1.5 = 94
+    assert [(x["side"], x["entry"], x["entry_ts"][11:16], x["target"]) for x in t][0] == ("SELL", 97, "09:35", 94)
+    on = run_day("X", _zone_df(rows), {"max_cycles": 2, "target_mult": 1.5, "include_costs": False})["trades"]
+    assert on[0]["side"] == "BUY" and on[0]["entry"] == 101
+
+
+def test_zone_spike_off_stop_on_close_and_relay():
+    from yonexis.zone_lab import run_day
+    rows = [(100, 101, 99, 99.5), (99.5, 101.5, 99.5, 101.4), (101.4, 101.6, 98.5, 100), (100, 100.2, 98.6, 98.7), (98.7, 98.8, 95, 95.5)]
+    t = run_day("X", _zone_df(rows), {"max_cycles": 2, "target_mult": 1.0, "spike": False, "include_costs": False})["trades"]
+    # BUY at the 09:20 close 101.4; 09:25 dips to 98.5 but closes 100 (inside): no stop; 09:30 closes 98.7 -> stop + relay SELL 98.7
+    assert [(x["side"], x["entry"], x["exit"], x["exit_reason"]) for x in t] == [("BUY", 101.4, 98.7, "stop_loss"), ("SELL", 98.7, 96.7, "target")]
+
+
+def test_zone_square_off_time_inside_a_candle():
+    from yonexis.zone_lab import run_day
+    df = _zone_df(LOTS_ROWS)
+    p = {"max_cycles": 1, "target_mult": 10, "include_costs": False}
+    assert run_day("X", df, {**p, "square_off": "09:37"})["trades"][0]["exit"] == 105        # 09:35 candle's close
+    t = run_day("X", df, {**p, "square_off": "09:35"})["trades"][0]
+    assert t["exit"] == 103 and t["exit_reason"] == "square_off"                               # 09:35 candle's open
+
+
+def test_zone_ai_search_matches_plain_replays():
+    import numpy as np
+    import pandas as pd
+    from yonexis import zone_ai
+    from yonexis.zone_lab import config_label, run_day
+    rng = np.random.default_rng(7)
+    frames = []
+    for d in pd.bdate_range("2026-03-02", periods=12):
+        idx = pd.date_range(d + pd.Timedelta(hours=9, minutes=15), periods=75, freq="5min")
+        c = 100 + np.cumsum(rng.normal(0, 0.35, 75))
+        o = np.r_[100.2, c[:-1]]
+        frames.append(pd.DataFrame({"open": o, "high": np.maximum(o, c) + 0.15, "low": np.minimum(o, c) - 0.15, "close": c, "volume": 5.0}, index=idx))
+    df = pd.concat(frames)
+    grid = {**zone_ai.DEFAULT_GRID, "lot1": [1.5, 3], "lot2": [3, 8], "entries": [1, 2], "sizes": [1, 2]}
+    cfgs = zone_ai.build_configs(grid)
+    assert (("zone", True, 1, 3.0, 3.0) in cfgs) and not any(a > b for *_, a, b in cfgs)
+    r = zone_ai._symbol_job(("A-FUT", 50, df.copy(), {"include_costs": True}, grid, cfgs, False))
+    for c in [("zone", True, 2, 1.5, 8.0), ("iz", False, 1, 3.0, 8.0), ("zone", False, 2, 3.0, 3.0)]:
+        want = 0.0
+        for d, g in df.groupby(df.index.normalize()):
+            want += sum(t["net_pnl"] for t in run_day("A-FUT", g, {**zone_ai.cfg_dict(c), "include_costs": True}, 50)["trades"] if t["exit_reason"] != "open")
+        assert abs(float(r["nets"][cfgs.index(c)].sum()) - want) < 0.05 * max(1, len(df) / 75)
+    r2 = zone_ai._symbol_job(("B-FUT", 25, df.copy() * 1.01, {"include_costs": True}, grid, cfgs, False))
+    out = zone_ai.analyse([r, r2], cfgs, grid, "2026-03-02", "2026-03-17", False, config_label)
+    assert [s["n"] for s in out["sets"]] == [1, 2] and out["sets"][1]["honest"]["symbols"]
+    assert out["split"] > "2026-03-02" and len(out["top_configs"]) <= 15
+    h = out["sets"][1]["honest"]                                 # both futures: 2 lots x lot x last close x 15%
+    want = sum(2 * lot * px for lot, px in ((50, float(df["close"].iloc[-1])), (25, float(df["close"].iloc[-1]) * 1.01))) * 0.15
+    assert abs(h["investment"] - want) < 1 and h["return_pct"] == round(h["full_net"] / h["investment"] * 100, 2)
+
+
+def test_llm_can_be_switched_off(monkeypatch):
+    import pytest
+    from yonexis.agents import llm, pipeline
+    from yonexis.config import settings
+    monkeypatch.setattr(settings, "LLM_ENABLED", False)
+    assert llm.health()["disabled"] is True
+    with pytest.raises(llm.LLMError):
+        llm.ask("s", "u")
+    assert pipeline.critic({"x": 1}).startswith("(critic unavailable")

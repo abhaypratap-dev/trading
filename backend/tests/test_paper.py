@@ -218,6 +218,8 @@ def test_live_touch_trigger_fires_on_tick(env, monkeypatch):
     e = le.LiveEngine()
     e.sim, e.symbols = None, ["X"]
     day = pd.Timestamp.now().normalize()
+    while day.dayofweek >= 5:                                        # the market is shut at weekends
+        day -= pd.Timedelta(days=1)
     idx = [day + pd.Timedelta(hours=9, minutes=15), day + pd.Timedelta(hours=9, minutes=20)]
     df = pd.DataFrame({"open": [100, 101], "high": [101, 101.5], "low": [99, 100], "close": [100.5, 100.2], "volume": [1, 1]}, index=idx)
     feed = ux.UpstoxFeed.__new__(ux.UpstoxFeed)
@@ -659,3 +661,149 @@ def test_selector_with_no_edge_stays_in_shadow():
     from yonexis.ml import selector
     rep = selector.train(_selector_rows(6000, 3, edge=False))["report"]
     assert not rep["beats_baseline"] and abs(rep["accuracy"]["profit"]["rank_ic"]) < 0.05
+
+
+def test_tuning_filters_and_honest_split():
+    import numpy as np
+    from yonexis import lab
+    from yonexis.backtest import BacktestConfig, run_backtest
+    from yonexis.data.connectors.simulated import simulate
+    from yonexis.strategies.first_red_candle_zone import FirstRedCandleZone
+    data = {s: simulate(s, "2024-01-01", "2024-03-31", seed=i) for i, s in enumerate(["AAA", "BBB"])}
+    allt = run_backtest(FirstRedCandleZone, data, {}, BacktestConfig()).trades
+    only = run_backtest(FirstRedCandleZone, data, {"_symbols": ["AAA"], "_windows": [["09:15", "10:00"]]}, BacktestConfig()).trades
+    assert set(only["symbol"]) <= {"AAA"} and all(pd.to_datetime(only["entry_ts"]).dt.strftime("%H:%M") < "10:00")
+    assert len(only) < len(allt)
+    # tune(): a strategy that only wins on AAA before 10:00 in BOTH halves gets recommended
+    rng = np.random.default_rng(1)
+    days = pd.bdate_range("2024-01-01", periods=200)
+    rows = []
+    for d in days:
+        for sym in ("AAA", "BBB"):
+            for hm in ("09:30", "11:30"):
+                good = sym == "AAA" and hm == "09:30"
+                rows.append({"symbol": sym, "entry_ts": pd.Timestamp(f"{d.date()} {hm}"), "net_pnl": rng.normal(300 if good else -200, 50)})
+    t = pd.DataFrame(rows)
+    cut = days[140]
+    r = lab.tune("x", t, [t], [{"rr": 3.0, "max_trades_per_day": 1}], cut)
+    assert r["recommended"] and r["symbols"] == ["AAA"] and r["windows"] == ["09:15-10:00"]
+    assert r["tuned_test"]["net"] > 0 > r["default_test"]["net"]
+
+
+def test_data_check_finds_gaps_and_no_trade_candles(env):
+    cfg, db, paper, broker = env
+    import numpy as np
+    from yonexis import datacheck
+    days = pd.bdate_range("2026-09-01", "2026-09-10")
+    full = []
+    for d in days:
+        idx = pd.date_range(d + pd.Timedelta(hours=9, minutes=15), periods=75, freq="5min")
+        full.append(pd.DataFrame({"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5, "volume": 10.0}, index=idx))
+    ref = pd.concat(full)
+    db.save_candles("NIFTY", ref, "5m", "upstox")
+    x = ref.copy()
+    x = x[x.index.normalize() != days[3]]                              # a whole day missing
+    x = x.drop(x[(x.index.normalize() == days[5]) & (x.index.hour == 11)].index)   # 12 candles missing
+    flat = (x.index.normalize() == days[7]) & (x.index.hour >= 13)
+    x.loc[flat, ["open", "high", "low", "close"]] = 100.0
+    x.loc[flat, "volume"] = 0.0
+    db.save_candles("AAA", x, "5m", "upstox")
+    r = datacheck.verify(["AAA"], ["5m"], "2026-09-01", "2026-09-10")
+    row = r["rows"][0]
+    assert row["missing_days"] == [str(days[3].date())]
+    assert row["incomplete"][0]["day"] == str(days[5].date()) and row["incomplete"][0]["missing"] == 12
+    assert row["flat_zero_vol"] == int(flat.sum()) and row["status"] == "gaps"
+    assert datacheck._ranges(["2026-09-01", "2026-09-02", "2026-09-04", "2026-09-20"]) == [("2026-09-01", "2026-09-04"), ("2026-09-20", "2026-09-20")]
+
+
+def test_continuous_futures_join_near_month_contracts(env, monkeypatch):
+    cfg, db, paper, broker = env
+    from yonexis import futcont
+    from yonexis.data.connectors import upstox as ux
+
+    def bars(day0, day1, px):
+        days = pd.bdate_range(day0, day1)
+        return pd.concat([pd.DataFrame({"open": px, "high": px + 1, "low": px - 1, "close": px, "volume": 100.0},
+                                       index=pd.date_range(d + pd.Timedelta(hours=9, minutes=15), periods=75, freq="5min")) for d in days])
+
+    class Fake:
+        def expiries(self, u):
+            return ["2026-08-07", "2026-08-27", "2026-09-24"]            # 08-07 is a weekly OPTION expiry (no future)
+        def expired_futures(self, u, e):
+            return [] if e == "2026-08-07" else [{"instrument_key": f"NSE_FO|{e[5:7]}", "trading_symbol": f"X FUT {e}", "instrument_type": "FUT"}]
+        def expired_candles(self, key, a, b, iv):
+            return bars(a, b, 100.0 if key.startswith("NSE_FO|08") else 200.0)
+        def fetch_history(self, sym, a, b, iv):
+            return bars(a, b, 300.0)
+    monkeypatch.setattr(ux.instruments, "underlying_key", lambda s: "NSE_INDEX|Nifty 50")
+    monkeypatch.setattr(ux.instruments, "contract", lambda s: {"expiry": "2026-10-29", "instrument_key": "NSE_FO|CUR", "trading_symbol": "X FUT OCT"})
+    monkeypatch.setattr(pd.Timestamp, "now", staticmethod(lambda *a, **k: pd.Timestamp("2026-10-06 12:00")))
+    db.save_candles("X-FUT", bars("2026-08-03", "2026-10-02", 1.0), "5m", "upstox")    # old thin far-month history
+    out = futcont.build("X-FUT", "2026-08-01", ["5m"], Fake())
+    assert [s["expiry"] for s in out["segments"]] == ["2026-08-27", "2026-09-24", "2026-10-29"]
+    assert out["segments"][1]["from"] == "2026-08-28" and out["segments"][2]["from"] == "2026-09-25"
+    df = db.load_candles("X-FUT", "5m", "2026-08-01", "2026-10-06")
+    by_day = df["close"].groupby(df.index.normalize()).first()
+    assert by_day[pd.Timestamp("2026-08-27")] == 100 and by_day[pd.Timestamp("2026-08-28")] == 200
+    assert by_day[pd.Timestamp("2026-09-25")] == 300 and (df["close"] != 1.0).all()       # old series fully replaced
+
+
+def test_save_candles_keeps_days_in_between(env):
+    cfg, db, paper, broker = env
+
+    def day(d, px):
+        return pd.DataFrame({"open": px, "high": px + 1, "low": px - 1, "close": px, "volume": 5.0},
+                            index=pd.date_range(pd.Timestamp(d) + pd.Timedelta(hours=9, minutes=15), periods=75, freq="5min"))
+    db.save_candles("K", pd.concat([day("2026-09-01", 1.0), day("2026-09-02", 2.0), day("2026-09-03", 3.0)]), "5m", "upstox")
+    db.save_candles("K", pd.concat([day("2026-09-01", 9.0), day("2026-09-03", 9.0)]), "5m", "upstox")
+    df = db.load_candles("K", "5m")
+    by = df["close"].groupby(df.index.normalize()).first()
+    assert list(by) == [9.0, 2.0, 9.0] and len(df) == 225               # 2 Sep was not wiped
+
+
+def test_futures_fetch_uses_the_near_month_contract_of_each_date(env, monkeypatch):
+    cfg, db, paper, broker = env
+    from yonexis import futcont
+    from yonexis.data.connectors import upstox as ux
+
+    def bars(a, b, px):
+        return pd.concat([pd.DataFrame({"open": px, "high": px + 1, "low": px - 1, "close": px, "volume": 100.0},
+                                       index=pd.date_range(d + pd.Timedelta(hours=9, minutes=15), periods=3, freq="5min"))
+                          for d in pd.bdate_range(a, b)])
+
+    class Fake:
+        calls = []
+        def expiries(self, u):
+            return ["2026-08-07", "2026-08-27", "2026-09-24"]
+        def expired_futures(self, u, e):
+            return [{"instrument_key": f"NSE_FO|{e[5:7]}", "instrument_type": "FUT"}]
+        def expired_candles(self, key, a, b, iv):
+            self.calls.append((key, a, b))
+            return bars(a, b, 100.0 if "|08" in key else 200.0)
+        def _fetch_history_raw(self, sym, a, b, iv):
+            self.calls.append(("current", a, b))
+            return bars(a, b, 300.0)
+    monkeypatch.setattr(ux.instruments, "underlying_key", lambda s: "NSE_EQ|X")
+    f = Fake()
+    df = futcont.fetch_range(f, "X-FUT", "2026-08-20", "2026-10-02", "5m")
+    by = df["close"].groupby(df.index.normalize()).first()
+    assert by[pd.Timestamp("2026-08-27")] == 100 and by[pd.Timestamp("2026-08-28")] == 200 and by[pd.Timestamp("2026-09-25")] == 300
+    assert [c[0] for c in f.calls] == ["NSE_FO|08|27-08-2026", "NSE_FO|09|24-09-2026", "current"]
+    assert f.calls[0][1:] == ("2026-08-20", "2026-08-27") and f.calls[2][1:] == ("2026-09-25", "2026-10-02")
+
+
+def test_refined_data_drops_flat_and_incomplete_days():
+    from yonexis import datacheck
+    days = []
+    for k, d in enumerate(pd.bdate_range("2026-09-01", "2026-09-03")):
+        g = pd.DataFrame({"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5, "volume": 10.0},
+                         index=pd.date_range(d + pd.Timedelta(hours=9, minutes=15), periods=75, freq="5min"))
+        if k == 1:
+            g.iloc[10:18, :4] = 100.0
+            g.iloc[10:18, 4] = 0.0                                       # 8 flat no-trade candles
+        if k == 2:
+            g = g.drop(g.index[5])                                      # one candle missing
+        days.append(g)
+    kept, skipped = datacheck.refine(pd.concat(days), "5m", "X")
+    assert sorted(set(kept.index.normalize().strftime("%Y-%m-%d"))) == ["2026-09-01"]
+    assert [s["day"] for s in skipped] == ["2026-09-02", "2026-09-03"] and "flat" in skipped[0]["reason"]
