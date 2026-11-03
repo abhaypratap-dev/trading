@@ -33,6 +33,9 @@
     <button type="button" data-tab="live" class="on" aria-current="page">Live</button>
     <button type="button" data-tab="wallet">Paper Wallet</button>
     <button type="button" data-tab="lists">Watchlists</button>
+    <button type="button" data-tab="mt5">MT5</button>
+    <button type="button" data-tab="oa">OpenAIAP</button>
+    <button type="button" data-tab="autos">Automations</button>
     <span class="nav-sep" aria-hidden="true"></span>
     <button type="button" data-tab="backtest">Backtest</button>
     <button type="button" data-tab="models">Strategies</button>
@@ -97,6 +100,189 @@
   </div>
   <div id="zn-out"></div>
 </section>
+
+<!-- ============================== MT5 ============================== -->
+<section id="tab-mt5" class="tab" aria-label="MetaTrader 5">
+  <div class="panel">
+    <div class="panel-h"><h2>MetaTrader 5</h2><span class="t3 xs">YONEXIS AI zone rules, live, executed in MT5 · prices from Upstox</span></div>
+    <div class="cards m5cards" id="m5-cards"></div>
+    <div class="row"><button type="button" id="m5-ping">Ping</button><button type="button" id="m5-symref">Load MT5 symbol list</button><button type="button" data-go="risk" id="m5-settings">Connection settings</button><span class="grow"></span><button type="button" class="danger" id="m5-kill">Stop automation &amp; close all YONEXIS positions</button></div>
+    <div id="m5-msg" class="t3 xs"></div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-h"><h2>Automation</h2><span id="m5-auto-state" class="t3 xs"></span></div>
+    <div class="form zform">
+      <label class="w-wide">Symbols <input id="m5-symbols" value=""></label>
+      <label>Use the configuration of <select id="m5-from"><option value="">— keep the settings below —</option></select></label>
+      <label>Max entries / day <input id="m5-cyc" type="number" min="1" max="10" step="1" value="2"></label>
+      <label>Target multiplier <select id="m5-base"><option value="zone">Zone (zone candle H−L)</option><option value="iz">IZ (entry candle H−L)</option></select></label>
+      <label>Targets per lot (×) <input id="m5-lots" class="mono" value="1.5" placeholder="e.g. 1.5, 20"><small class="t3">one number per lot; a lot = the volume set in Symbol mapping</small></label>
+      <label class="chk"><input type="checkbox" id="m5-spike" checked> spike (a wick through the zone is enough)</label>
+      <label class="chk"><input type="checkbox" id="m5-short" checked> allow SELL</label>
+      <label>No new entries after <input type="time" id="m5-cutoff" value="14:30"></label>
+      <label>Square-off <input type="time" id="m5-sq" value="15:15" min="09:20" max="15:30"></label>
+      <label>Skip zones wider than (%) <input type="number" id="m5-maxz" min="0" step="0.1" placeholder="no limit"></label>
+    </div>
+    <div class="row"><button type="button" id="m5-save">Save settings</button><button type="button" class="primary" id="m5-start">Start automation</button><button type="button" id="m5-stop">Stop automation</button><span id="m5-auto-msg" class="t3 xs"></span></div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-h"><h2>Symbol mapping</h2><span class="t3 xs">which MT5 symbol each YONEXIS symbol trades, and how much one lot is</span></div>
+    <div class="tscroll"><table class="tbl" id="m5-map"><thead><tr><th>YONEXIS</th><th>MT5 symbol</th><th class="r">Volume / lot</th><th>Levels</th><th class="r">Upstox</th><th class="r">MT5 bid / ask</th><th class="r">Gap</th><th></th></tr></thead><tbody></tbody></table></div>
+    <datalist id="m5-symlist"></datalist>
+    <div class="row"><button type="button" class="primary" id="m5-map-save">Save mapping</button><button type="button" id="m5-automatch">Suggest MT5 symbols</button><span id="m5-map-msg" class="t3 xs"></span></div>
+    <p class="t3 xs"><b>Levels</b>: <i>Same</i> = the MT5 symbol has the same price as on NSE (zone levels used as they are). <i>Offset</i> = a CFD or other contract priced differently: levels are shifted by the MT5 − Upstox gap at the moment of the order. Test buy / close work in Demo mode only (minimum volume).</p>
+  </div>
+
+  <div class="grid2">
+    <div class="panel"><div class="panel-h"><h2>Today</h2><span id="m5-day" class="t3 xs"></span></div><div class="tscroll"><table class="tbl" id="m5-board"><thead><tr><th>Symbol</th><th>Zone</th><th>Status</th><th class="r">Entries</th><th class="r" title="what YONEXIS's calls made today: the zone rules on today's Upstox candles, open lots at the live price, after costs - whether or not MT5 filled them">Calls P&amp;L</th><th class="r" title="actual profit in the MT5 account: today's closed YONEXIS deals + open YONEXIS positions (account currency)">MT5 P&amp;L</th><th>Lots</th></tr></thead><tbody></tbody><tfoot></tfoot></table></div></div>
+    <div class="panel"><div class="panel-h"><h2>Activity</h2></div><ol class="ev-list m5-ev" id="m5-events"></ol></div>
+  </div>
+  <div class="panel"><div class="panel-h"><h2>YONEXIS positions in MT5</h2><span id="m5-pos-note" class="t3 xs"></span></div><div class="tscroll"><table class="tbl" id="m5-pos"><thead><tr><th>Ticket</th><th>Symbol</th><th>Side</th><th class="r">Volume</th><th class="r">Open</th><th class="r">Now</th><th class="r">SL</th><th class="r">TP</th><th class="r">Profit</th><th>Comment</th></tr></thead><tbody></tbody></table></div></div>
+  <div class="panel"><div class="panel-h"><h2>Order log</h2><span class="t3 xs">every command sent to MT5, its answer and the round-trip time</span></div><div class="tscroll tall"><table class="tbl" id="m5-log"><thead><tr><th>Time (IST)</th><th>Kind</th><th>Symbol</th><th>Command</th><th>Side</th><th class="r">Volume</th><th class="r">Price</th><th class="r">SL</th><th class="r">Target(s)</th><th>Result</th><th class="r">ms</th><th>Detail</th></tr></thead><tbody></tbody></table></div></div>
+</section>
+
+<!-- ============================== AUTOMATIONS (every automation, every website + MT5) ============================== -->
+<section id="tab-autos" class="tab" aria-label="Automations">
+  <div class="panel">
+    <div class="panel-h"><h2>Automations</h2><span id="au-clock" class="t3 xs"></span></div>
+    <div class="cards m5cards" id="au-cards"></div>
+    <div class="row"><span class="t3 xs">Every automation on every website, and MT5. Running ones trade 09:15-15:30; switched-on ones start by themselves at 09:15.</span><span class="grow"></span><button type="button" class="sm" data-go="oa">Set up in OpenAIAP</button></div>
+    <div id="au-msg" class="t3 xs"></div>
+  </div>
+  <div id="au-list" class="au-list"></div>
+</section>
+
+<!-- ============================== OpenAIAP (web automation) ============================== -->
+<section id="tab-oa" class="tab" aria-label="OpenAIAP web automation">
+  <div class="panel oa-sites">
+    <div class="row"><b>Website</b><div class="oa-site-tabs" id="oa-site-tabs" role="tablist" aria-label="Websites"></div>
+      <span class="grow"></span><button type="button" class="sm" id="oa-site-add">+ Add website</button><button type="button" class="sm" id="oa-site-ren">Rename</button><button type="button" class="sm danger" id="oa-site-del" hidden>Remove</button></div>
+    <div id="oa-site-msg" class="t3 xs">Each website has its own login, recorded flows, symbol mapping, workers and automation - they all run at the same time. Everything below is for the website selected here.</div>
+  </div>
+  <div class="panel">
+    <div class="panel-h"><h2>OpenAIAP</h2><span class="t3 xs">record your broker's web terminal once · YONEXIS AI zone rules place the orders through it · prices from Upstox</span></div>
+    <div class="cards m5cards" id="oa-cards"></div>
+    <div class="row"><button type="button" id="oa-bstart">Start browser</button><button type="button" id="oa-bstop">Close browser</button><button type="button" class="primary" id="oa-live-open">▦ Live workers</button><span class="grow"></span><button type="button" class="danger" id="oa-kill">Stop automation &amp; close all YONEXIS positions</button></div>
+    <div id="oa-msg" class="t3 xs"></div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-h"><h2>Recorder</h2><span id="oa-rec-state" class="t3 xs"></span></div>
+    <div class="row oa-bar">
+      <button type="button" class="sm" id="oa-back" title="Back">←</button><button type="button" class="sm" id="oa-reload" title="Reload the page (while recording this adds a reload step)">⟳</button>
+      <input id="oa-url" class="mono grow" placeholder="https://web terminal of your broker" aria-label="Address">
+      <button type="button" class="sm" id="oa-go">Go</button>
+      <label class="xs">screen <select id="oa-wsel" class="sm"><option value="0">main (recorder)</option></select></label>
+      <button type="button" class="sm" id="oa-up" title="Scroll up">▲</button><button type="button" class="sm" id="oa-down" title="Scroll down">▼</button>
+    </div>
+    <div class="row">
+      <label>Flow <select id="oa-flow"></select></label>
+      <input id="oa-newflow" class="sm" placeholder="new flow name" aria-label="New flow name" hidden>
+      <label class="chk"><input type="checkbox" id="oa-rec-goto"> start by opening this page</label>
+      <button type="button" class="primary" id="oa-rec">● Record</button>
+      <label title="What a click on the screen does">Click mode <select id="oa-cmode"><option value="click">click</option><option value="exact">click this exact spot (charts / canvas)</option><option value="hover">hover (menus that open on mouse-over)</option><option value="inspect">pick element (wait for / read / read all)</option></select></label>
+    </div>
+    <div class="oa-typing" id="oa-typing" hidden></div>
+    <div class="oa-screen" id="oa-screen" tabindex="0" aria-label="Browser screen: click to click in the browser; after clicking a field, type on your keyboard"><img id="oa-img" alt="Browser screen"><div class="oa-empty t3" id="oa-empty">Browser closed. Press <b>Start browser</b> (opens the start address from Settings) or type an address above.</div></div>
+    <div id="oa-pick" class="oa-pick" hidden></div>
+    <div class="row">
+      <input id="oa-text" class="grow" placeholder="text to type into the field you clicked" aria-label="Text to type">
+      <label>record as <select id="oa-as"></select></label>
+      <button type="button" id="oa-type">Type</button>
+      <button type="button" class="sm" data-oakey="Enter">Enter</button><button type="button" class="sm" data-oakey="Tab">Tab</button><button type="button" class="sm" data-oakey="Escape">Esc</button>
+    </div>
+    <p class="t3 xs">Click on the screen to click in the browser. <b>Click a field, then just type</b> on your keyboard (paste, Backspace, Enter and Tab work too); the box above is another way to type. Typing into a password field saves it as the secret <code>password</code> and records <code>{secret:password}</code>.
+      Order flows: type the search text <i>as</i> <code>{query}</code> (e.g. NIFTY) and the quantity as <code>{qty}</code>; fill <b>{symbol}</b> below with the result you will click (e.g. NIFTY 25 NOV FUT) <i>before</i> pressing Record - clicking that result then records <code>{symbol}</code>, so every order picks its own symbol.
+      <b>symbols</b> flow: type <code>{query}</code> in the search, then <i>pick element</i> on one result → <i>read all like this</i>.</p>
+  </div>
+
+  <div class="panel">
+    <div class="panel-h"><h2>Steps · <span id="oa-steps-name"></span></h2><span class="t3 xs">mark the click that places the order as <b>final</b> - test runs stop before it</span></div>
+    <div class="tscroll"><table class="tbl" id="oa-steps"><thead><tr><th>#</th><th>Action</th><th>Selector / URL / key</th><th>Value</th><th title="a failure of this step is ignored">opt.</th><th title="commits the order">final</th><th></th></tr></thead><tbody></tbody></table></div>
+    <div class="row"><button type="button" class="sm" id="oa-addstep">+ step</button><button type="button" class="primary" id="oa-save">Save flow</button><button type="button" class="danger sm" id="oa-delflow">Delete flow</button></div>
+    <div class="form zform">
+      <label>{symbol} <input id="oa-v-symbol" class="mono" placeholder="e.g. NIFTY 25 NOV FUT"></label>
+      <label>{query} <input id="oa-v-query" class="mono" placeholder="e.g. NIFTY"></label>
+      <label>{qty} <input id="oa-v-qty" type="number" min="0" step="any" value="1"></label>
+      <label>{price} <input id="oa-v-price" type="number" step="any"></label>
+      <label>{sl} <input id="oa-v-sl" type="number" step="any"></label>
+      <label>{target} <input id="oa-v-target" type="number" step="any"></label>
+      <label>{side} (close) <select id="oa-v-side"><option>BUY</option><option>SELL</option></select></label>
+    </div>
+    <div class="row"><button type="button" id="oa-test">Test run (stops before final)</button><button type="button" class="danger" id="oa-real">Run for real</button><span id="oa-run-msg" class="t3 xs"></span></div>
+    <div id="oa-run-out"></div>
+  </div>
+
+  <div class="grid2">
+    <div class="panel">
+      <div class="panel-h"><h2>Settings</h2></div>
+      <div class="form zform">
+        <label>Mode <select id="oa-mode"><option value="off">Off</option><option value="dry_run">Dry run (log only)</option><option value="demo">Demo</option><option value="live">LIVE (real money)</option></select></label>
+        <label>The recorded web ID is <select id="oa-account"><option value="demo">a demo / paper login</option><option value="real">a real-money login</option></select></label>
+        <label id="oa-live-l" hidden>Type the phrase to trade real money <input id="oa-live" class="mono" autocomplete="off"></label>
+        <label class="w-wide">Start address <input id="oa-start" class="mono" placeholder="https://..."></label>
+        <label>Max quantity / order <input id="oa-maxv" type="number" min="0" step="any"></label>
+        <label>Max open positions <input id="oa-maxp" type="number" min="1" step="1"></label>
+        <label>Step timeout (s) <input id="oa-tmo" type="number" min="1" max="60" step="1"></label>
+        <label>Parallel workers (tabs) <input id="oa-workers" type="number" min="1" max="20" step="1"><small class="t3">set it to the number of automation symbols for one tab per symbol; 1 = one order at a time</small></label>
+        <label class="chk"><input type="checkbox" id="oa-relogin"> when a flow fails before its final step: refresh the page and retry, then log in again and retry</label>
+      </div>
+      <div class="row"><button type="button" class="primary" id="oa-cfg-save">Save settings</button><span id="oa-cfg-msg" class="t3 xs"></span></div>
+    </div>
+    <div class="panel">
+      <div class="panel-h"><h2>Secrets</h2><span class="t3 xs">used as <code>{secret:name}</code> · values are never shown again</span></div>
+      <ul class="oa-secrets" id="oa-secrets"></ul>
+      <div class="row"><input id="oa-sec-n" class="sm mono" placeholder="name (e.g. pin)" aria-label="Secret name"><input id="oa-sec-v" class="sm" type="password" placeholder="value" aria-label="Secret value" autocomplete="new-password"><button type="button" class="sm" id="oa-sec-save">Save secret</button></div>
+      <p class="t3 xs">Kept in the YONEXIS database (app settings) on this machine. For a TOTP / OTP login keep the browser logged in (the profile is saved) and record a login flow only for the password step.</p>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-h"><h2>Automation</h2><span id="oa-auto-state" class="t3 xs"></span></div>
+    <div class="row"><div class="oa-site-tabs" id="oa-auto-tabs" role="tablist" aria-label="Automations of this website"></div><span class="grow"></span>
+      <button type="button" class="sm" id="oa-auto-add">+ New automation</button><button type="button" class="sm" id="oa-auto-ren">Rename</button><button type="button" class="sm danger" id="oa-auto-del" hidden>Remove</button></div>
+    <div class="form zform">
+      <label>Watchlist <select id="oa-wl"><option value="">— the symbols typed here —</option></select><small class="t3">a saved watchlist: the automation always trades the list as it is now</small></label>
+      <label class="w-wide">Symbols <input id="oa-symbols" value=""></label>
+      <label>Max entries / day <input id="oa-cyc" type="number" min="1" max="10" step="1" value="2"></label>
+      <label>Target multiplier <select id="oa-base"><option value="zone">Zone (zone candle H−L)</option><option value="iz">IZ (entry candle H−L)</option></select></label>
+      <label>Targets per lot (×) <input id="oa-lots" class="mono" value="1.5" placeholder="e.g. 1.5, 20"><small class="t3">one number per lot; a lot = the quantity in Symbol mapping</small></label>
+      <label class="chk"><input type="checkbox" id="oa-spike" checked> spike (a wick through the zone is enough)</label>
+      <label class="chk"><input type="checkbox" id="oa-short" checked> allow SELL</label>
+      <label>No new entries after <input type="time" id="oa-cutoff" value="14:30"></label>
+      <label>Square-off <input type="time" id="oa-sq" value="15:15" min="09:20" max="15:30"></label>
+      <label>Skip zones wider than (%) <input type="number" id="oa-maxz" min="0" step="0.1" placeholder="no limit"></label>
+    </div>
+    <div class="row"><button type="button" id="oa-copy">Copy the MT5 tab's settings</button><button type="button" id="oa-asave">Save settings</button><button type="button" class="primary" id="oa-astart">Start automation</button><button type="button" id="oa-astop">Stop automation</button><button type="button" class="danger sm" id="oa-astopclose">Stop &amp; close this automation's positions</button><span id="oa-auto-msg" class="t3 xs"></span></div>
+    <p class="t3 xs">Several automations can run on one website, each with its own symbols / watchlist and settings. A symbol can be in only one running automation per website (the website keeps one position per symbol); on another website the same symbol is fine.</p>
+  </div>
+
+  <div class="panel">
+    <div class="panel-h"><h2>Symbol mapping</h2><span class="t3 xs">what to type in the web terminal's search for each YONEXIS symbol ({symbol}), and the quantity of one lot ({qty})</span></div>
+    <div class="tscroll"><table class="tbl" id="oa-map"><thead><tr><th>YONEXIS</th><th title="automations of this website that trade the symbol">Used by</th><th>Upstox contract</th><th title="typed in the website's search: {query}">Search as</th><th title="the website's name for it: {symbol}">Web symbol</th><th class="r">Quantity / lot</th><th class="r">Upstox</th><th>Test the order path</th></tr></thead><tbody></tbody></table></div>
+    <div class="row"><button type="button" class="primary" id="oa-map-save">Save mapping</button><button type="button" id="oa-symfetch">Look up symbols on the website</button><button type="button" id="oa-suggest">Suggest web symbols</button><span id="oa-map-msg" class="t3 xs"></span></div>
+    <div class="row"><label class="chk"><input type="checkbox" id="oa-map-all"> show every mapped symbol of this website (not only this automation's)</label></div>
+    <div class="row"><label class="chk"><input type="checkbox" id="oa-test-real"> test buttons place REAL orders (otherwise they stop before the final step)</label></div>
+    <div id="oa-test-out"></div>
+    <p class="t3 xs">Candles and prices always come from Upstox. <b>Look up</b> runs your recorded <b>symbols</b> flow for every row: it types the search text (ANGELONE for ANGELONE-FUT), clicks the result that is the same contract (futures by Upstox's near-month expiry, never options) and <b>saves the website's name</b> as the web symbol - on all workers in parallel. Live orders and <b>prepare</b> then use that name as <code>{symbol}</code>. (A symbols flow that reads a whole list instead: Look up, then <b>Suggest</b>.)</p>
+  </div>
+
+  <div class="grid2">
+    <div class="panel"><div class="panel-h"><h2>Today</h2><span id="oa-day" class="t3 xs"></span></div><div class="tscroll"><table class="tbl" id="oa-board"><thead><tr><th>Symbol</th><th>Zone</th><th>Status</th><th class="r">Entries</th><th class="r">Calls P&amp;L</th><th>Lots</th></tr></thead><tbody></tbody><tfoot></tfoot></table></div></div>
+    <div class="panel"><div class="panel-h"><h2>Activity</h2></div><ol class="ev-list m5-ev" id="oa-events"></ol></div>
+  </div>
+  <div class="panel"><div class="panel-h"><h2>Workers</h2><span class="t3 xs">browser tabs placing orders in parallel · each symbol always uses the same tab</span></div><div class="tscroll"><table class="tbl" id="oa-workers-t"><thead><tr><th>Worker</th><th>Tab</th><th>Doing</th><th>Symbols</th><th title="order prepared up to its final click - at the trigger only the final click is left">Ready to fire</th><th>Last error</th></tr></thead><tbody></tbody></table></div></div>
+  <div class="panel"><div class="panel-h"><h2>Positions placed through the web</h2><span class="grow"></span><button type="button" class="sm" id="oa-forget" title="closed by hand in the web terminal">Forget all</button></div><div class="tscroll"><table class="tbl" id="oa-pos"><thead><tr><th>Symbol</th><th>Side</th><th class="r">Quantity</th><th class="r">Open</th><th>Opened</th><th>Comment</th></tr></thead><tbody></tbody></table></div></div>
+  <div class="panel"><div class="panel-h"><h2>Flow log</h2><span class="t3 xs">every flow run for an order, its result and how long it took</span></div><div class="tscroll tall"><table class="tbl" id="oa-log"><thead><tr><th>Time (IST)</th><th>Kind</th><th>Symbol</th><th>Flow</th><th>Side</th><th class="r">Qty</th><th class="r">Price</th><th>Result</th><th class="r">ms</th><th>Detail</th></tr></thead><tbody></tbody></table></div></div>
+</section>
+
+<div class="oa-live" id="oa-lw" hidden role="dialog" aria-label="Live workers">
+  <div class="oa-live-h"><b>Live workers</b><span id="oa-live-sum" class="t3 xs"></span><span class="grow"></span>
+    <button type="button" class="danger sm" id="oa-live-kill">Stop automation &amp; close all</button><button type="button" class="x" id="oa-live-x" aria-label="Close">×</button></div>
+  <div class="oa-live-grid" id="oa-live-grid"></div>
+</div>
 
 <!-- ============================== WATCHLISTS ============================== -->
 <section id="tab-lists" class="tab" aria-label="Watchlists">
@@ -503,6 +689,25 @@
     <button type="button" role="tab" data-sys="setup" aria-selected="false">Setup</button>
     <button type="button" role="tab" data-sys="risk" aria-selected="false">Risk</button>
     <button type="button" role="tab" data-sys="activity" aria-selected="false">Activity log</button>
+    <button type="button" role="tab" data-sys="mt5" aria-selected="false">MT5 connection</button>
+  </div>
+
+  <div class="sys-pane" data-pane="mt5" hidden>
+    <div class="panel"><div class="panel-h"><h2>MetaTrader 5 connection</h2><span id="m5c-health" class="t3 xs"></span></div>
+      <p class="panel-sub">The MT5 tab's automation sends its orders to MetaTrader 5, where the YonexisBridge Expert Advisor executes them. Upstox stays for prices, candles and charts only - it never receives an order.</p>
+      <div class="form">
+        <label>Mode <select id="m5c-mode"><option value="off">Off</option><option value="dry_run">Dry run - decide and log, send nothing</option><option value="demo">Demo account</option><option value="live">Live - real account</option></select></label>
+        <label>Connection <select id="m5c-transport"><option value="file">Mac / local - shared folder (fastest)</option><option value="web">Web - HTTPS (cloud)</option></select></label>
+        <label class="w-wide" id="m5c-live-l" hidden>Type <b class="mono">I-ACCEPT-REAL-MONEY-RISK</b> to allow orders on a REAL account <input id="m5c-live" class="mono" autocomplete="off"></label>
+        <label>Max volume per order <input id="m5c-maxv" type="number" min="0.01" step="0.01"></label>
+        <label>Max open positions <input id="m5c-maxp" type="number" min="1" step="1"></label>
+        <label>Daily loss limit <input id="m5c-loss" type="number" min="0" step="100"><small class="t3">account currency · 0 = off · stops entries and closes all</small></label>
+        <label>Slippage (points) <input id="m5c-dev" type="number" min="0" step="1"></label>
+        <label>Magic number <input id="m5c-magic" type="number" min="1" step="1"><small class="t3">marks YONEXIS orders in MT5</small></label>
+      </div>
+      <div class="row"><button type="button" class="primary" id="m5c-save">Save</button><button type="button" id="m5c-ping">Ping the EA</button><button type="button" id="m5c-ea">Download the Expert Advisor (.mq5)</button><span id="m5c-msg" class="t3 xs"></span></div>
+      <div id="m5c-setup" class="t2 xs"></div>
+    </div>
   </div>
 
   <div class="sys-pane" data-pane="health">
@@ -573,6 +778,9 @@
     <div class="sheet-h"><b>More</b><button type="button" class="x" data-close aria-label="Close">×</button></div>
     <button type="button" data-go="zone">YONEXIS AI (zone)</button>
     <button type="button" data-go="lists">Watchlists</button>
+    <button type="button" data-go="mt5">MT5</button>
+    <button type="button" data-go="oa">OpenAIAP</button>
+    <button type="button" data-go="autos">Automations</button>
     <button type="button" data-go="models">Strategies</button>
     <button type="button" data-go="builder">AI Builder</button>
     <button type="button" data-go="import">Import</button>

@@ -807,3 +807,196 @@ def test_refined_data_drops_flat_and_incomplete_days():
     kept, skipped = datacheck.refine(pd.concat(days), "5m", "X")
     assert sorted(set(kept.index.normalize().strftime("%Y-%m-%d"))) == ["2026-09-01"]
     assert [s["day"] for s in skipped] == ["2026-09-02", "2026-09-03"] and "flat" in skipped[0]["reason"]
+
+
+def _mt5_rig(env, params, mode="demo", margin="hedging"):
+    import time as _time
+    from datetime import datetime
+    cfg, db, paper, broker = env
+    from yonexis.mt5 import auto, config
+    from yonexis.mt5.bridge import Bridge
+
+    class FakeBridge(Bridge):
+        kind = "fake"
+
+        def __init__(self):
+            super().__init__()
+            self.lines, self.n = [], 1000
+            self.state = {"account": {"trade_mode": "demo", "margin_mode": margin, "equity": 100000.0}, "positions": [],
+                          "deals": [], "trade_allowed": True, "quotes": {}}
+            self.state_at = _time.time()
+
+        def _deliver(self, line):
+            self.lines.append(line)
+            f = line.split("|")
+            cid, op = f[0], f[1]
+            if op in ("buy", "sell"):
+                self.n += 1
+                self.state["positions"].append({"ticket": self.n, "symbol": f[2], "type": op, "volume": float(f[3] or 1),
+                                                "sl": float(f[4] or 0), "tp": float(f[5] or 0), "magic": int(f[7])})
+                self._results[cid] = {"id": cid, "ok": True, "position": self.n, "price": 0}
+            else:
+                self._results[cid] = {"id": cid, "ok": True}
+
+        def health(self):
+            return {"connected": True, "message": "ok"}
+
+    class FakeEngine:
+        def __init__(self):
+            self.px, self.bar = None, None
+
+        def quote(self, s, strict=False):
+            return {"ltp": self.px}
+
+        def forming(self, s):
+            return self.bar
+
+        def candles(self, s):
+            return pd.DataFrame()
+
+    config.save({"mode": mode})
+    config.save_mapping({"X-FUT": {"mt5": "XFUT", "volume": 1}})
+    config.save_auto({"enabled": True, "symbols": ["X-FUT"], "params": params})
+    clock = [datetime(2026, 11, 2, 9, 15, 30)]
+    br, eng = FakeBridge(), FakeEngine()
+    t = auto.AutoTrader(engine_getter=lambda: eng, bridge_getter=lambda: br, clock=lambda: clock[0])
+
+    def tick(hhmmss, px, bar):
+        clock[0] = datetime(2026, 11, 2, *map(int, hhmmss.split(":")))
+        eng.px = px
+        eng.bar = {"ts": pd.Timestamp(f"2026-11-02 {bar[0]}"), "open": bar[1], "high": bar[2], "low": bar[3], "close": bar[4]}
+        t.step()
+    return t, br, eng, tick
+
+
+def test_mt5_auto_spike_entry_targets_and_relay(env):
+    p = {"max_cycles": 2, "lot_targets": [1, 2], "target_base": "zone", "spike": True, "entry_cutoff": "14:30",
+         "square_off": "15:15", "allow_short": True}
+    t, br, eng, tick = _mt5_rig(env, p)
+    tick("09:16:00", 99.8, ("09:15", 100, 101, 99, 99.8))
+    tick("09:19:59", 99.5, ("09:15", 100, 101, 99, 99.5))       # zone candle: red, 99-101
+    tick("09:20:01", 100.0, ("09:20", 99.6, 100.0, 99.6, 100.0))
+    assert t.syms["X-FUT"]["zone"]["high"] == 101 and not [l for l in br.lines if "|buy|" in l]
+    tick("09:21:00", 101.2, ("09:20", 99.6, 101.2, 99.6, 101.2))   # crosses the zone high -> BUY, one position per lot
+    buys = [l.split("|") for l in br.lines if "|buy|" in l]
+    assert len(buys) == 2 and {b[2] for b in buys} == {"XFUT"}
+    assert [float(b[4]) for b in buys] == [99, 99] and sorted(float(b[5]) for b in buys) == [103, 105]
+    tick("09:21:01", 101.3, ("09:20", 99.6, 101.3, 99.6, 101.3))
+    assert all(l["status"] == "open" and l["position"] for l in t.syms["X-FUT"]["legs"])
+    # MT5 stops both lots out at 99 -> relay SELL at once
+    import time as _t
+    for l in t.syms["X-FUT"]["legs"]:
+        l["open_at"] = _t.time() - 10
+    for pos in list(br.state["positions"]):
+        br.state["deals"].append({"position": pos["ticket"], "entry": "out", "reason": "sl", "price": 99})
+    br.state["positions"] = []
+    tick("09:30:00", 98.9, ("09:30", 99.5, 99.5, 98.9, 98.9))
+    sells = [l.split("|") for l in br.lines if "|sell|" in l]
+    assert len(sells) == 2 and [float(s[4]) for s in sells] == [101, 101] and sorted(float(s[5]) for s in sells) == [95, 97]
+    assert t.syms["X-FUT"]["cycles"] == 2
+    # square-off closes the open lots
+    tick("09:31:00", 98.0, ("09:30", 99.5, 99.5, 98.0, 98.0))
+    tick("15:15:01", 98.0, ("15:15", 98, 98, 98, 98))
+    assert len([l for l in br.lines if "|close|" in l]) == 2
+
+
+def test_mt5_auto_iz_target_set_when_entry_candle_closes_and_dry_run(env):
+    p = {"max_cycles": 1, "lot_targets": [1.5], "target_base": "iz", "spike": True, "entry_cutoff": "14:30",
+         "square_off": "15:15", "allow_short": True}
+    t, br, eng, tick = _mt5_rig(env, p)
+    tick("09:16:00", 99.8, ("09:15", 100, 101, 99, 99.8))
+    tick("09:20:01", 100.0, ("09:20", 99.6, 100.0, 99.6, 100.0))
+    tick("09:21:00", 101.2, ("09:20", 99.6, 101.2, 99.6, 101.2))
+    buy = [l.split("|") for l in br.lines if "|buy|" in l][0]
+    assert buy[5] == ""                                                # IZ: no TP until the entry candle closes
+    tick("09:24:59", 101.0, ("09:20", 99.6, 101.4, 99.6, 101.0))
+    tick("09:25:01", 101.1, ("09:25", 101.0, 101.1, 101.0, 101.1))  # entry candle closed: range 101.4-99.6 = 1.8
+    mod = [l.split("|") for l in br.lines if "|modify|" in l]
+    assert mod and abs(float(mod[0][5]) - (101 + 1.8 * 1.5)) < 1e-6
+
+
+def test_mt5_guard_blocks_wrong_account_and_dry_run(env):
+    from yonexis.mt5 import auto, config
+    p = {"max_cycles": 1, "lot_targets": [1], "target_base": "zone", "spike": True, "entry_cutoff": "14:30",
+         "square_off": "15:15", "allow_short": True}
+    t, br, eng, tick = _mt5_rig(env, p, mode="live")
+    ok, why = auto.guard(config.get(), br, 1, True, 0)
+    assert not ok and "demo" in why                                   # live mode but the account is a demo
+    br.state["account"]["trade_mode"] = "real"
+    assert not auto.guard(config.get(), br, 1, True, 0)[0]            # not confirmed
+    config.save({"live_confirm": config.LIVE_PHRASE})
+    assert auto.guard(config.get(), br, 1, True, 0)[0]
+    t2, br2, eng2, tick2 = _mt5_rig(env, p, mode="dry_run")
+    tick2("09:16:00", 99.8, ("09:15", 100, 101, 99, 99.8))
+    tick2("09:20:01", 100.0, ("09:20", 99.6, 100.0, 99.6, 100.0))
+    tick2("09:21:00", 101.2, ("09:20", 99.6, 101.2, 99.6, 101.2))
+    assert not [l for l in br2.lines if "|watch|" not in l] and t2.syms["X-FUT"]["legs"][0]["status"] == "open"   # followed on paper, nothing sent
+    tick2("09:26:00", 103.1, ("09:25", 101.2, 103.1, 101.2, 103.1))
+    assert t2.syms["X-FUT"]["legs"][0]["closed_why"] == "target"
+
+
+def test_mt5_file_bridge_roundtrip(tmp_path):
+    import json
+    from yonexis.mt5.bridge import FileBridge
+    b = FileBridge(tmp_path)
+    (tmp_path / "YONEXIS").mkdir(parents=True)
+    (tmp_path / "YONEXIS" / "state.json").write_text(json.dumps({"account": {"trade_mode": "demo"}, "next_seq": 41}))
+    cid = b.send("buy", symbol="XFUT", volume=1.0, sl=99.0, tp=103.0, magic=7, deviation=20, comment="YX a|b")
+    f = tmp_path / "YONEXIS" / "c0000000041.txt"                    # numbered from the EA's next_seq
+    parts = f.read_text().strip().split("|")
+    assert parts[:10] == [cid, "buy", "XFUT", "1", "99", "103", "", "7", "20", "YX a/b"] and int(parts[10]) > 0
+    b.send("ping")
+    assert (tmp_path / "YONEXIS" / "c0000000042.txt").exists() and (tmp_path / "YONEXIS" / "next.txt").read_text() == "42"
+    (tmp_path / "YONEXIS" / f"r_{cid}.json").write_text(json.dumps({"id": cid, "ok": True, "price": 101.2}))
+    r = b.take(cid)
+    assert r["ok"] and r["price"] == 101.2 and "latency_ms" in r and b.health()["connected"]
+
+
+def test_mt5_auto_spike_off_entry_on_close_and_stop_on_close(env):
+    p = {"max_cycles": 2, "lot_targets": [1], "target_base": "zone", "spike": False, "entry_cutoff": "14:30",
+         "square_off": "15:15", "allow_short": True}
+    t, br, eng, tick = _mt5_rig(env, p)
+    tick("09:16:00", 99.8, ("09:15", 100, 101, 99, 99.8))
+    tick("09:20:01", 100.0, ("09:20", 99.6, 100.0, 99.6, 100.0))
+    tick("09:22:00", 101.5, ("09:20", 99.6, 101.6, 99.6, 101.5))     # wick above the zone: nothing yet
+    assert not [l for l in br.lines if "|buy|" in l]
+    tick("09:25:01", 101.6, ("09:25", 101.5, 101.6, 101.5, 101.6))  # the 09:20 candle CLOSED at 101.5 above 101 -> BUY
+    buy = [l.split("|") for l in br.lines if "|buy|" in l]
+    assert len(buy) == 1 and float(buy[0][4]) == 97 and float(buy[0][5]) == 103.5   # disaster SL lo-range, TP 101.5+2
+    tick("09:27:00", 98.5, ("09:25", 101.5, 101.6, 98.5, 98.5))     # dips below 99 inside the candle: no stop yet
+    assert not [l for l in br.lines if "|close|" in l]
+    tick("09:30:01", 98.4, ("09:30", 98.5, 98.5, 98.4, 98.4))       # 09:25 closed at 98.5 below 99 -> close + relay SELL
+    assert len([l for l in br.lines if "|close|" in l]) == 1 and len([l for l in br.lines if "|sell|" in l]) == 1
+
+
+def test_mt5_suggest_and_month_roll(env, monkeypatch):
+    from yonexis.mt5 import config
+    monkeypatch.setattr(config, "near_month", lambda s: "NOV")
+    names = ["ANGELONENOV-LOT", "ANGELONEDEC-LOT", "BANKNIFTYNOV-LOT", "NIFTYNOV-LOT", "MARUTINOV-LOT", "GOLDDEC", "EURUSD"]
+    sug = config.suggest(["ANGELONE-FUT", "NIFTY-FUT", "BANKNIFTY-FUT", "MARUTI-FUT", "PAYTM-FUT"], names)
+    assert sug == {"ANGELONE-FUT": "ANGELONENOV-LOT", "NIFTY-FUT": "NIFTYNOV-LOT", "BANKNIFTY-FUT": "BANKNIFTYNOV-LOT",
+                   "MARUTI-FUT": "MARUTINOV-LOT"}
+    config.save_mapping({"ANGELONE-FUT": {"mt5": "ANGELONENOV-LOT", "volume": 1}})
+    assert config.mapping()["ANGELONE-FUT"]["mt5"] == "ANGELONENOV-LOT"
+    monkeypatch.setattr(config, "near_month", lambda s: "DEC")       # after the November expiry
+    assert config.mapping()["ANGELONE-FUT"]["mt5"] == "ANGELONEDEC-LOT"
+
+
+def test_mt5_auto_netting_stop_in_mt5_starts_relay(env):
+    import time as _t
+    p = {"max_cycles": 2, "lot_targets": [1, 2], "target_base": "zone", "spike": True, "entry_cutoff": "14:30",
+         "square_off": "15:15", "allow_short": True}
+    t, br, eng, tick = _mt5_rig(env, p, margin="netting")
+    tick("09:16:00", 99.8, ("09:15", 100, 101, 99, 99.8))
+    tick("09:20:01", 100.0, ("09:20", 99.6, 100.0, 99.6, 100.0))
+    tick("09:21:00", 101.2, ("09:20", 99.6, 101.2, 99.6, 101.2))
+    buys = [l.split("|") for l in br.lines if "|buy|" in l]
+    assert len(buys) == 1 and float(buys[0][3]) == 2 and float(buys[0][4]) == 99      # netting: one order for both lots
+    tick("09:21:01", 101.3, ("09:20", 99.6, 101.3, 99.6, 101.3))
+    for l in t.syms["X-FUT"]["legs"]:
+        l["open_at"] = _t.time() - 10
+    br.state["positions"] = []                                                          # MT5 hit the SL at 99
+    br.state["deals"] = [{"position": 1001, "entry": "out", "reason": "sl", "price": 99}]
+    tick("09:30:00", 98.9, ("09:30", 99.5, 99.5, 98.9, 98.9))
+    assert all(l["closed_why"] == "stop_loss" for l in t.syms["X-FUT"]["legs"] if l["side"] == "BUY")
+    assert len([l for l in br.lines if "|sell|" in l]) == 1                             # relay SELL

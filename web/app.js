@@ -94,8 +94,8 @@ function reasonHTML(raw, tone = true) {
 }
 
 // ---------------------------------------------------------------- tabs + navigation
-const TAB_ORDER = ["zone", "live", "wallet", "lists", "backtest", "models", "builder", "import", "feedback", "data", "risk"];
-const MORE_TABS = ["zone", "lists", "models", "builder", "import", "feedback", "data"];
+const TAB_ORDER = ["zone", "live", "wallet", "lists", "mt5", "oa", "autos", "backtest", "models", "builder", "import", "feedback", "data", "risk"];
+const MORE_TABS = ["zone", "lists", "mt5", "oa", "autos", "models", "builder", "import", "feedback", "data"];
 let curTab = "live";
 function showTab(name) {
   if (!TAB_ORDER.includes(name)) return;
@@ -106,7 +106,7 @@ function showTab(name) {
   $("#bnav-more").classList.toggle("on", MORE_TABS.includes(name));
   $$("#more-sheet [data-go]").forEach(b => b.classList.toggle("on", b.dataset.go === name));
   closeOverlays();
-  const loaders = { wallet: () => { loadWallet(); typeof loadScope === "function" && loadScope(); }, models: loadModelsTab, data: () => { loadInventory(); loadUpstox(); dcSummary(); }, feedback: loadFeedback, risk: loadRisk, backtest: () => { loadStrategySelects(); loadBtHistory(); }, builder: () => { loadLab(); }, import: loadStrategySelects };
+  const loaders = { wallet: () => { loadWallet(); typeof loadScope === "function" && loadScope(); }, models: loadModelsTab, data: () => { loadInventory(); loadUpstox(); dcSummary(); }, feedback: loadFeedback, risk: loadRisk, backtest: () => { loadStrategySelects(); loadBtHistory(); }, builder: () => { loadLab(); }, import: loadStrategySelects, mt5: () => m5Load(true), oa: () => oaLoad(true), autos: () => auLoad() };
   loaders[name]?.();
   if (changed) window.scrollTo(0, 0);
   setTimeout(markScrolls, 50);
@@ -1129,10 +1129,11 @@ setInterval(() => { if (curTab === "wallet") loadWallet(); }, 5000);
 // ---------------------------------------------------------------- system: sub-tabs
 let sysPane = store.get("yx_sys") || "health";
 function setSys(p) {
-  if (!["health", "setup", "risk", "activity"].includes(p)) p = "health";
+  if (!["health", "setup", "risk", "activity", "mt5"].includes(p)) p = "health";
   sysPane = p; store.set("yx_sys", p);
   $$("#sys-seg [data-sys]").forEach(b => { const on = b.dataset.sys === p; b.classList.toggle("on", on); b.setAttribute("aria-selected", String(on)); });
   $$("#tab-risk .sys-pane").forEach(x => x.hidden = x.dataset.pane !== p);
+  if (p === "mt5") m5cLoad();
   setTimeout(markScrolls, 30);
 }
 $$("#sys-seg [data-sys]").forEach(b => b.onclick = () => setSys(b.dataset.sys));
@@ -2526,3 +2527,932 @@ $("#fc-go").onclick = async () => {
   $("#fc-bar").hidden = true; $("#fc-go").disabled = false;
 };
 api("/api/jobs/latest/fut_cont").then(j => { if (j && j.status === "done" && j.result) fcRender(j.result); }).catch(() => {});
+
+// ---------------------------------------------------------------- MetaTrader 5
+const M5 = { st: null, map: {}, timer: null, syms: [] };
+const m5num = v => v == null || v === "" ? "—" : fmt(v, v >= 1000 ? 2 : 4);
+function m5cRender(c, st) {
+  $("#m5c-mode").value = c.mode; $("#m5c-transport").value = c.transport;
+  $("#m5c-maxv").value = c.max_volume; $("#m5c-maxp").value = c.max_positions; $("#m5c-loss").value = c.max_daily_loss;
+  $("#m5c-dev").value = c.deviation; $("#m5c-magic").value = c.magic;
+  $("#m5c-live-l").hidden = $("#m5c-mode").value !== "live"; $("#m5c-live").placeholder = c.live_confirm ? "confirmed" : "";
+  const h = st.health || {};
+  $("#m5c-health").innerHTML = `<span class="${h.connected ? "green" : "amber"}">● ${esc(h.message || "")}</span>`;
+  const url = `${location.origin}/api/mt5/bridge`;
+  $("#m5c-setup").innerHTML = c.transport === "file" ? `<ol>
+      <li>On the Mac, in the project folder run <code>scripts/mt5-setup.sh</code>. It finds MT5's Common Files folder, saves it in <code>.env</code> and copies the Expert Advisor into MT5. Then Stop + Start YONEXIS.
+        ${st.transport_ready && !st.transport_ready.ok ? `<br><span class="amber">${esc(st.transport_ready.detail)}</span>` : `<br><span class="green">shared folder found</span>`}</li>
+      <li>In MT5 press <b>F4</b> (MetaEditor) → Experts → <b>YonexisBridge.mq5</b> → <b>Compile</b>.</li>
+      <li>Drag <b>YonexisBridge</b> onto any one chart, keep <i>Transport = file</i>, tick <i>Allow Algo Trading</i>, and switch on <b>Algo Trading</b> in the MT5 toolbar.</li>
+      <li>Press <b>Ping the EA</b>. Start with mode <b>Dry run</b>, then <b>Demo</b>.</li></ol>`
+    : `<ol>
+      <li>In MT5: Tools → Options → Expert Advisors → tick <i>Allow WebRequest for listed URL</i> and add <code>${esc(location.origin)}</code> (MT5 accepts only https on port 443).</li>
+      <li>Attach <b>YonexisBridge</b> with <i>Transport = web</i>, <i>WebURL</i> = <code>${esc(url)}</code>, <i>BridgeToken</i> = <code class="mono">${esc(c.token)}</code> <button type="button" class="sm" id="m5c-token">new token</button>${location.protocol === "https:" ? "" : ` <span class="amber">this page is not https - the web connection needs the public https address</span>`}</li>
+      <li>If the dashboard sits behind a password, also fill <i>BasicAuth</i> with <code>user:password</code>.</li></ol>`;
+  $("#m5c-token")?.addEventListener("click", async () => { const r = await api("/api/mt5/token", { method: "POST" }); m5cRender(r, st); });
+}
+async function m5cLoad() {
+  try { const st = await api("/api/mt5/status"); M5.st = st; m5cRender(st.config, st); } catch (e) { $("#m5c-msg").textContent = e.message; }
+}
+$("#m5c-mode").onchange = () => { $("#m5c-live-l").hidden = $("#m5c-mode").value !== "live"; };
+$("#m5c-save").onclick = async () => {
+  const body = { mode: $("#m5c-mode").value, transport: $("#m5c-transport").value, max_volume: parseFloat($("#m5c-maxv").value),
+    max_positions: parseInt($("#m5c-maxp").value), max_daily_loss: parseFloat($("#m5c-loss").value) || 0,
+    deviation: parseInt($("#m5c-dev").value) || 0, magic: parseInt($("#m5c-magic").value) || 770011 };
+  if (body.mode === "live") body.live_confirm = $("#m5c-live").value.trim();
+  try { await api("/api/mt5/config", { method: "PUT", json: body }); $("#m5c-msg").innerHTML = `<span class="green">saved: mode ${esc(body.mode)}, ${esc(body.transport)} connection</span>`; $("#m5c-live").value = ""; m5cLoad(); }
+  catch (e) { $("#m5c-msg").innerHTML = `<span class="red">${esc(e.message)}</span>`; }
+};
+async function m5Ping(out) {
+  out.innerHTML = `<span class="spin"></span> pinging the Expert Advisor…`;
+  try { const r = await api("/api/mt5/ping", { method: "POST" });
+    out.innerHTML = r.ok ? `<span class="green">EA answered in ${r.latency_ms} ms</span>` : `<span class="red">${esc(r.error || r.desc || "no answer")}</span>`; }
+  catch (e) { out.innerHTML = `<span class="red">${esc(e.message)}</span>`; }
+}
+$("#m5c-ping").onclick = () => m5Ping($("#m5c-msg"));
+$("#m5c-ea").onclick = async () => {
+  try {
+    const r = await fetch("/api/mt5/ea", { headers: { "X-Admin-Token": store.get("yx_token") || "" } });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const a = document.createElement("a"); a.href = URL.createObjectURL(await r.blob()); a.download = "YonexisBridge.mq5"; a.click();
+  } catch (e) { $("#m5c-msg").innerHTML = `<span class="red">${esc(e.message)}</span>`; }
+};
+$("#m5-settings").addEventListener("click", () => setTimeout(() => setSys("mt5"), 0));
+$("#m5-ping").onclick = () => m5Ping($("#m5-msg"));
+$("#m5-symref").onclick = async () => {
+  $("#m5-msg").innerHTML = `<span class="spin"></span> asking MT5 for its symbol list…`;
+  try {
+    const r = await api("/api/mt5/symbols/refresh", { method: "POST" });
+    if (!r.result.ok) { $("#m5-msg").innerHTML = `<span class="red">${esc(r.result.error || r.result.desc)}</span>`; return; }
+    const total = r.total || 0, t0 = Date.now(), before = r.count;
+    while (Date.now() - t0 < 180000) {
+      await new Promise(res => setTimeout(res, 1500));
+      const s = await api("/api/mt5/symbols?limit=1");
+      if (!s.progress && s.count && (s.count !== before || Date.now() - t0 > 5000)) {
+        $("#m5-msg").innerHTML = `<span class="green">${s.count.toLocaleString()} MT5 symbols loaded</span>`; m5SymList(""); return; }
+      $("#m5-msg").innerHTML = `<span class="spin"></span> MT5 is listing its symbols ${esc(s.progress || "")}${total ? ` of ${total.toLocaleString()}` : ""}…`;
+    }
+    $("#m5-msg").innerHTML = `<span class="amber">still waiting for the list - try again in a minute</span>`;
+  } catch (e) { $("#m5-msg").innerHTML = `<span class="red">${esc(e.message)}</span>`; }
+};
+$("#m5-kill").onclick = async () => {
+  if (!confirmTwice($("#m5-kill"), "Click again to stop and close all")) return;
+  try { const r = await api("/api/mt5/close-all", { method: "POST" }); $("#m5-msg").innerHTML = `<span class="amber">automation stopped${r.close_sent ? "; close-all sent to MT5" : " (MT5 not connected - nothing sent)"}</span>`; m5Load(); }
+  catch (e) { $("#m5-msg").innerHTML = `<span class="red">${esc(e.message)}</span>`; }
+};
+function confirmTwice(btn, text) {
+  if (btn.dataset.armed) { delete btn.dataset.armed; btn.textContent = btn.dataset.label; return true; }
+  btn.dataset.label = btn.textContent; btn.dataset.armed = "1"; btn.textContent = text;
+  setTimeout(() => { if (btn.dataset.armed) { delete btn.dataset.armed; btn.textContent = btn.dataset.label; } }, 4000);
+  return false;
+}
+async function m5SymList(q) {
+  try { const r = await api(`/api/mt5/symbols?q=${encodeURIComponent(q)}&limit=300`); M5.syms = r.symbols;
+    $("#m5-symlist").innerHTML = r.symbols.map(x => `<option value="${esc(x.name)}">${esc(x.desc || x.path || "")}</option>`).join(""); } catch (e) {}
+}
+function m5Params() {
+  return { max_cycles: parseInt($("#m5-cyc").value) || 2, target_base: $("#m5-base").value, spike: $("#m5-spike").checked, allow_short: $("#m5-short").checked,
+    lot_targets: $("#m5-lots").value.split(/[\s,]+/).map(parseFloat).filter(x => !isNaN(x)), entry_cutoff: $("#m5-cutoff").value || "14:30",
+    square_off: $("#m5-sq").value || "15:15", max_zone_pct: parseFloat($("#m5-maxz").value) || 100 };
+}
+function m5FillParams(p) {
+  $("#m5-cyc").value = p.max_cycles ?? 2; $("#m5-base").value = p.target_base || "zone"; $("#m5-spike").checked = p.spike !== false;
+  $("#m5-short").checked = p.allow_short !== false; $("#m5-lots").value = (p.lot_targets || [p.target_mult || 1.5]).join(", ");
+  $("#m5-cutoff").value = p.entry_cutoff || "14:30"; $("#m5-sq").value = p.square_off || "15:15";
+  $("#m5-maxz").value = p.max_zone_pct && p.max_zone_pct < 100 ? p.max_zone_pct : "";
+}
+async function m5FromOptions() {
+  const opts = [];
+  try { const a = await api("/api/jobs/latest/zone_ai"); M5.ai = a && a.status === "done" ? a.result : null; } catch (e) {}
+  if (M5.ai) for (const [k, st] of M5.ai.sets.entries()) for (const w of ["honest", "max"]) opts.push({ v: `ai|${k}|${w}`, t: `AI backtest · ${w === "honest" ? "honest pick" : "maximum profit"} · ${st.n} futures · ${st[w].label}` });
+  if (typeof ZCFG !== "undefined") ZCFG.forEach((c, i) => opts.push({ v: `zc|${i}`, t: `YONEXIS AI configuration #${i + 1} · ${c.max_cycles} entries · targets ${c.lot_targets.join(" / ")} · ${c.target_base || "zone"}${c.spike === false ? " · no spike" : ""}` }));
+  try { const wl = await api("/api/watchlists"); M5.lists = wl; Object.keys(wl).forEach(n => opts.push({ v: `wl|${n}`, t: `Watchlist: ${n} (${wl[n].length} symbols, symbols only)` })); } catch (e) {}
+  $("#m5-from").innerHTML = `<option value="">— keep the settings below —</option>` + opts.map(o => `<option value="${esc(o.v)}">${esc(o.t)}</option>`).join("");
+}
+$("#m5-from").onchange = () => {
+  const [kind, a, b] = $("#m5-from").value.split("|");
+  let symbols = null, cfg = null;
+  if (kind === "ai" && M5.ai) { const x = M5.ai.sets[+a][b]; symbols = x.symbols; cfg = x.config; }
+  if (kind === "zc") { const c = ZCFG[+a]; cfg = { max_cycles: c.max_cycles, lot_targets: c.lot_targets, target_base: c.target_base, spike: c.spike };
+    cfg.entry_cutoff = $("#zn-cutoff").value; cfg.square_off = $("#zn-sq").value; cfg.allow_short = $("#zn-short").checked; }
+  if (kind === "wl") symbols = M5.lists[a];
+  if (cfg) m5FillParams({ ...m5Params(), ...cfg });
+  if (symbols) { $("#m5-symbols").value = symbols.join(","); $("#m5-symbols").dispatchEvent(new Event("sp:refresh")); m5RenderMap(); }
+  $("#m5-auto-msg").textContent = "loaded - press Save settings (or Start automation)";
+};
+async function m5SaveAuto(extra = {}) {
+  const body = { symbols: syms("#m5-symbols"), params: m5Params(), ...extra };
+  try { const a = await api("/api/mt5/auto", { method: "PUT", json: body });
+    $("#m5-auto-msg").innerHTML = `<span class="green">${a.enabled ? "automation ON" : "saved (automation off)"} · ${a.symbols.length} symbols</span>`; m5Load(); }
+  catch (e) { $("#m5-auto-msg").innerHTML = `<span class="red">${esc(e.message)}</span>`; }
+}
+$("#m5-save").onclick = () => m5SaveAuto();
+$("#m5-start").onclick = () => m5SaveAuto({ enabled: true });
+$("#m5-stop").onclick = () => m5SaveAuto({ enabled: false });
+function m5RenderMap() {
+  const st = M5.st || {}, q = {}; (st.quotes || []).forEach(x => q[x.symbol] = x);
+  // keep what is typed / suggested but not saved yet: the table is redrawn every 2 s with fresh prices
+  const draft = {};
+  $$("#m5-map tbody tr[data-s]").forEach(tr => { draft[tr.dataset.s] = { mt5: tr.querySelector(".m5-mt5").value,
+    volume: tr.querySelector(".m5-vol").value, price: tr.querySelector(".m5-price").value }; });
+  const rows = [...new Set([...syms("#m5-symbols"), ...Object.keys(M5.map)])];
+  const demo = st.config && st.config.mode === "demo";
+  $("#m5-map tbody").innerHTML = rows.map(s => { const m = { ...(M5.map[s] || {}), ...(draft[s] || {}) }, x = q[s] || {};
+    return `<tr data-s="${esc(s)}"><td><b>${esc(s)}</b></td><td><input class="sm mono m5-mt5" list="m5-symlist" value="${esc(m.mt5 || "")}" placeholder="MT5 symbol" aria-label="MT5 symbol for ${esc(s)}"></td>
+      <td class="r"><input class="sm m5-vol" type="number" min="0.01" step="0.01" value="${m.volume ?? 1}" aria-label="Volume per lot"></td>
+      <td><select class="sm m5-price" aria-label="Levels"><option value="same"${m.price !== "offset" ? " selected" : ""}>Same</option><option value="offset"${m.price === "offset" ? " selected" : ""}>Offset</option></select></td>
+      <td class="r">${m5num(x.upstox)}</td><td class="r">${x.bid ? `${m5num(x.bid)} / ${m5num(x.ask)}` : "—"}</td><td class="r">${x.gap != null ? m5num(x.gap) : "—"}</td>
+      <td>${demo && m.mt5 ? `<button type="button" class="sm" data-m5t="BUY">test buy</button> <button type="button" class="sm" data-m5t="CLOSE">close</button>` : ""}</td></tr>`; }).join("") || `<tr><td colspan="8" class="t3">Choose symbols in Automation first.</td></tr>`;
+  $$("#m5-map [data-m5t]").forEach(b => b.onclick = async () => {
+    const s = b.closest("tr").dataset.s, close = b.dataset.m5t === "CLOSE";
+    b.disabled = true;
+    try { const r = await api(close ? "/api/mt5/test-close" : "/api/mt5/test-order", { json: { symbol: s, side: "BUY" } });
+      $("#m5-map-msg").innerHTML = r.ok ? `<span class="green">${esc(s)}: ${close ? "closed" : "bought"} at ${r.price ?? "—"} · ${r.latency_ms} ms round trip</span>` : `<span class="red">${esc(s)}: ${esc(r.desc || r.error)}</span>`; }
+    catch (e) { $("#m5-map-msg").innerHTML = `<span class="red">${esc(e.message)}</span>`; }
+    b.disabled = false;
+  });
+}
+function m5ReadMap() {
+  const out = {};
+  $$("#m5-map tbody tr[data-s]").forEach(tr => { const v = tr.querySelector(".m5-mt5").value.trim();
+    if (v) out[tr.dataset.s] = { mt5: v, volume: parseFloat(tr.querySelector(".m5-vol").value) || 1, price: tr.querySelector(".m5-price").value }; });
+  return out;
+}
+$("#m5-map-save").onclick = async () => {
+  try { const r = await api("/api/mt5/mapping", { method: "PUT", json: { mapping: m5ReadMap() } }); M5.map = await api("/api/mt5/mapping");
+    $("#m5-map tbody").innerHTML = ""; m5RenderMap();
+    $("#m5-map-msg").innerHTML = `<span class="green">${Object.keys(M5.map).length} symbols mapped</span>`
+      + ((r.unknown || []).length ? `<br><span class="red">not in MT5's symbol list (check the spelling): ${esc(r.unknown.map(s => `${s} → ${M5.map[s].mt5}`).join(", "))}</span>` : ""); }
+  catch (e) { $("#m5-map-msg").innerHTML = `<span class="red">${esc(e.message)}</span>`; }
+};
+$("#m5-automatch").onclick = async () => {
+  $("#m5-map-msg").innerHTML = `<span class="spin"></span> matching…`;
+  const rows = $$("#m5-map tbody tr[data-s]");
+  try {
+    const sug = await api("/api/mt5/suggest", { json: { symbols: rows.map(tr => tr.dataset.s) } });
+    let n = 0;
+    rows.forEach(tr => { const inp = tr.querySelector(".m5-mt5"); if (!inp.value.trim() && sug[tr.dataset.s]) { inp.value = sug[tr.dataset.s]; n++; } });
+    const miss = rows.filter(tr => !tr.querySelector(".m5-mt5").value.trim()).map(tr => tr.dataset.s);
+    $("#m5-map-msg").innerHTML = (n ? `<span class="green">${n} matched (current-month contracts; they roll to the next month by themselves) - check, then Save mapping</span>` : `<span class="t3">nothing new matched</span>`)
+      + (miss.length ? `<br><span class="amber">not found in MT5: ${esc(miss.join(", "))}</span>` : "");
+  } catch (e) { $("#m5-map-msg").innerHTML = `<span class="red">${esc(e.message)}</span>`; }
+};
+function m5Render(st) {
+  M5.st = st;
+  const a = st.account || {}, h = st.health || {}, c = st.config || {}, tr = st.trader || {};
+  const kind = a.trade_mode ? `<span class="pill ${a.trade_mode === "real" ? "sell" : "pass"} xs">${esc(a.trade_mode.toUpperCase())}</span>` : "";
+  const card = (k, v, sub = "", cl = "") => `<div class="card"><div class="k">${k}</div><div class="v ${cl}">${v}</div>${sub ? `<div class="s">${sub}</div>` : ""}</div>`;
+  $("#m5-cards").innerHTML = card("Connection", h.connected ? "connected" : "not connected", esc(h.connected ? `${c.transport} · report ${h.age_s}s ago${st.trade_allowed === false ? " · Algo Trading OFF" : ""}` : (h.message || "")) + (st.ea_version ? ` · EA ${esc(st.ea_version)}` : "") + (st.ea_diag ? `<br><span class="amber">${esc(st.ea_diag)}</span>` : "") + (h.connected && st.ea_version && st.ea_version < "1.14" ? `<br><span class="amber">old EA: rerun scripts/mt5-setup.sh and Compile again</span>` : ""), h.connected ? "green" : "amber")
+    + card("Account", a.login ? `${a.login} ${kind}` : "—", esc(a.login ? `${a.server || ""} · ${a.margin_mode || ""}` : ""))
+    + card("Equity", a.equity != null ? `${fmt(a.equity, 2)} ${esc(a.currency || "")}` : "—", a.balance != null ? `balance ${fmt(a.balance, 2)} · free margin ${fmt(a.margin_free, 2)}` : "")
+    + card("Mode", esc({ off: "Off", dry_run: "Dry run", demo: "Demo", live: "LIVE" }[c.mode] || c.mode), c.mode === "live" ? "real orders" : c.mode === "dry_run" ? "nothing is sent" : "", c.mode === "live" ? "red" : "")
+    + card("Automation", st.auto.enabled ? "ON" : "off", `${st.auto.symbols.length} symbols${tr.halted ? " · STOPPED: " + esc(tr.halted) : ""}`, st.auto.enabled ? "green" : "");
+  $("#m5-auto-state").textContent = st.auto.enabled ? "running" : "stopped";
+  $("#m5-day").textContent = tr.day || "";
+  const syms_ = tr.symbols || {};
+  $("#m5-board tbody").innerHTML = Object.entries(syms_).map(([s, x]) => { const open = (x.legs || []).filter(l => l.status === "open" || l.status === "sending");
+    const status = x.skip ? `<span class="amber">${esc(x.skip)}</span>` : x.done ? esc(x.done) : open.length ? `<span class="pill ${open[0].side === "BUY" ? "buy" : "sell"} xs">${open[0].side}</span> ${open.length} lot${open.length > 1 ? "s" : ""}` : x.zone ? "waiting for a break" : "waiting for the zone";
+    const pl = ((st.pnl || {}).symbols || {})[s] || {};
+    return `<tr><td><b>${esc(s)}</b></td><td class="mono">${x.zone ? `${fmt(x.zone.low)} – ${fmt(x.zone.high)}` : "—"}</td><td>${status}</td><td class="r">${x.cycles || 0}</td>
+      <td class="r ${cls(pl.calls)}">${pl.calls != null ? inrS(pl.calls) : "—"}${pl.calls_open ? '<div class="xs t3">live</div>' : ""}</td>
+      <td class="r ${cls(pl.mt5)}">${pl.mt5 != null ? fmt(pl.mt5, 2) : "—"}</td>
+      <td class="xs">${(x.legs || []).slice(-6).map(l => `${l.side[0]}${l.lot} ${l.target != null ? "→" + fmt(l.target) : ""} <span class="t3">${esc(l.closed_why || l.status)}</span>`).join(" · ")}</td></tr>`; }).join("") || `<tr><td colspan="7" class="t3">${st.auto.enabled ? "waiting for the market (09:15-15:30) and live prices" : "automation is off"}</td></tr>`;
+  const P = st.pnl || {};
+  $("#m5-board tfoot").innerHTML = Object.keys(syms_).length ? `<tr><td colspan="4"><b>Total</b></td><td class="r ${cls(P.total_calls)}"><b>${inrS(P.total_calls || 0)}</b></td>
+    <td class="r ${cls(P.total_mt5)}"><b>${fmt(P.total_mt5 || 0, 2)}</b></td><td></td></tr>` : "";
+  $("#m5-events").innerHTML = (tr.events || []).slice().reverse().map(e => `<li class="${e.level === "error" ? "red" : e.level === "warn" ? "amber" : ""}"><span class="mono t3">${esc(e.t)}</span> <b>${esc(e.symbol)}</b> ${esc(e.text)}</li>`).join("") || `<li class="t3">nothing yet</li>`;
+  $("#m5-pos tbody").innerHTML = (st.positions || []).map(p => `<tr><td class="mono">${p.ticket}</td><td>${esc(p.symbol)}</td><td><span class="pill ${p.type === "buy" ? "buy" : "sell"} xs">${esc(p.type.toUpperCase())}</span></td>
+    <td class="r">${p.volume}</td><td class="r">${m5num(p.price_open)}</td><td class="r">${m5num(p.price)}</td><td class="r">${p.sl ? m5num(p.sl) : "—"}</td><td class="r">${p.tp ? m5num(p.tp) : "—"}</td>
+    <td class="r ${cls(p.profit)}">${fmt(p.profit, 2)}</td><td class="xs t3">${esc(p.comment || "")}</td></tr>`).join("") || `<tr><td colspan="10" class="t3">none</td></tr>`;
+  $("#m5-pos-note").textContent = st.other_positions ? `${st.other_positions} other position(s) in the account are not YONEXIS's and are never touched` : "";
+}
+const m5Ist = ts => { const d = new Date(String(ts).replace(" ", "T") + "Z"); return isNaN(d) ? String(ts).slice(11, 19) : d.toLocaleTimeString("en-GB", { timeZone: "Asia/Kolkata" }); };
+async function m5Log() {
+  try {
+    const rows = await api("/api/mt5/log?limit=150");
+    const ids = {};                                     // order id -> its trade info (results show the same trade)
+    rows.forEach(r => { const d = r.detail || {}; if (d.id && d.trade) ids[d.id] = d.trade; });
+    $("#m5-log tbody").innerHTML = rows.map(r => {
+      const d = r.detail || {}, res = d.result || {}, tr = d.trade || ids[(d.for || {}).id] || ids[res.id] || {};
+      const side = tr.side ? `<span class="pill ${tr.side === "BUY" ? "buy" : "sell"} xs">${tr.side}</span>` : "";
+      const fill = (r.kind === "result" && res.price ? fmt(res.price) : (tr.price != null ? fmt(tr.price) : "")) + (tr.rebuilt ? '<div class="xs t3">rebuilt</div>' : "");
+      const tg = (tr.targets || []).filter(x => x != null).map(x => fmt(x)).join(" / ");
+      const txt = r.kind === "result" ? (res.desc || res.error || "") : r.kind === "order" ? (tr.why ? `close: ${tr.why}` : "") : (d.why || "");
+      return `<tr><td class="mono xs">${esc(m5Ist(r.ts))}</td><td>${esc(r.kind)}</td><td>${esc(r.symbol || "")}<div class="xs t3">${esc(tr.symbol || "")}</div></td><td>${esc(r.op || "")}</td>
+        <td>${side}</td><td class="r">${tr.volume ?? ""}</td><td class="r">${fill}${r.kind === "result" && res.price ? '<div class="xs t3">filled</div>' : ""}</td>
+        <td class="r">${tr.sl != null ? fmt(tr.sl) : ""}</td><td class="r">${tg}</td>
+        <td>${r.ok == null ? "" : r.ok ? '<span class="green">ok</span>' : '<span class="red">no</span>'}</td><td class="r">${r.latency_ms != null ? fmt(r.latency_ms, 0) : ""}</td><td class="xs t3">${esc(txt)}</td></tr>`; }).join("")
+      || `<tr><td colspan="12" class="t3">no commands yet</td></tr>`;
+  } catch (e) {}
+}
+let m5Inited = false;
+async function m5Load(first) {
+  if (!m5Inited) { m5Inited = true; makeSymPicker($("#m5-symbols")); $("#m5-symbols").addEventListener("change", m5RenderMap); }
+  try {
+    const st = await api("/api/mt5/status");
+    if (first) {
+      M5.map = await api("/api/mt5/mapping");
+      $("#m5-symbols").value = st.auto.symbols.join(","); $("#m5-symbols").dispatchEvent(new Event("sp:refresh"));
+      m5FillParams(st.auto.params); m5FromOptions(); m5SymList("");
+    }
+    m5Render(st);
+    if (first || !$("#m5-map").contains(document.activeElement)) m5RenderMap();
+    m5Log();
+  } catch (e) { $("#m5-msg").innerHTML = `<span class="red">${esc(e.message)}</span>`; }
+}
+setInterval(() => { if (curTab === "mt5" && !document.hidden) m5Load(false); }, 2000);
+
+// ---------------------------------------------------------------- OpenAIAP (web automation, parallel to MT5)
+const OA = { st: null, flows: {}, flow: "buy", steps: [], map: {}, open: false, recUrl: null, lastUrl: null, site: store.get("yx_oa_site") || "default", sites: [] };
+OA.aid = store.get("yx_oa_aid_" + OA.site) || "main";
+// every OpenAIAP call is for the website chosen in the website bar
+const oaU = p => p + (p.includes("?") ? "&" : "?") + "site=" + encodeURIComponent(OA.site || "default") + "&aid=" + encodeURIComponent(OA.aid || "main");
+const OA_FLOWS = ["login", "buy", "sell", "close", "close_all", "symbols", "prepare"];
+const OA_W = 1280, OA_H = 800;
+const oaErr = (sel, e) => { $(sel).innerHTML = `<span class="red">${esc(e.message)}</span>`; };
+const oaClone = x => JSON.parse(JSON.stringify(x));
+
+function oaFlowOptions() {
+  const names = [...new Set([...OA_FLOWS, ...Object.keys(OA.flows), OA.flow])];
+  $("#oa-flow").innerHTML = names.map(n => { const f = OA.flows[n];
+    return `<option value="${esc(n)}">${esc(n)}${f ? ` · ${f.steps.length} steps` : " · not recorded"}</option>`; }).join("") + `<option value="__new">+ new flow…</option>`;
+  $("#oa-flow").value = OA.flow;
+}
+function oaPickFlow(name) {
+  OA.flow = name; OA.steps = oaClone((OA.flows[name] || {}).steps || []);
+  $("#oa-rec-goto").checked = name === "login";
+  oaFlowOptions(); oaRenderSteps();
+}
+$("#oa-flow").onchange = () => {
+  const v = $("#oa-flow").value;
+  $("#oa-newflow").hidden = v !== "__new";
+  if (v === "__new") { $("#oa-newflow").focus(); return; }
+  oaPickFlow(v);
+};
+$("#oa-newflow").onchange = () => {
+  const n = $("#oa-newflow").value.trim().toLowerCase().replace(/[^a-z0-9_]/g, "_");
+  if (!n) return;
+  $("#oa-newflow").value = ""; $("#oa-newflow").hidden = true; oaPickFlow(n);
+};
+
+// ---- the step editor
+const OA_MAIN = { goto: "url", press: "key", expect_text: "text", wait: null, scroll: null, click_xy: "x" };
+const OA_VAL = { click_item: "value", extract: "var", extract_list: "var", wait: "ms", scroll: "dy", fill: "value", type: "value", select: "value", click_xy: "y" };
+const OA_TPL = v => ({ selector: `text=/^\\s*{${v}|re}\\s*$/i`, alt: [`text={${v}}`] });
+function oaRenderSteps() {
+  $("#oa-steps-name").textContent = OA.flow;
+  const acts = (OA.st && OA.st.actions) || ["goto", "reload", "click", "click_item", "click_xy", "hover", "fill", "type", "press", "select", "scroll", "wait", "wait_for", "wait_value", "expect_text", "extract", "extract_list"];
+  $("#oa-steps tbody").innerHTML = OA.steps.map((s, i) => {
+    const main = s.action in OA_MAIN ? OA_MAIN[s.action] : "selector", val = OA_VAL[s.action];
+    return `<tr data-i="${i}"><td>${i + 1}</td>
+      <td><select class="sm" data-k="action" aria-label="Action of step ${i + 1}">${acts.map(a => `<option${a === s.action ? " selected" : ""}>${a}</option>`).join("")}</select></td>
+      <td class="oa-sel">${main ? `<input class="sm mono" data-k="${main}" value="${esc(s[main] ?? "")}" placeholder="${main}" aria-label="${main}">` : ""}${s.note ? `<div class="xs t3">${esc(s.note)}${s.action === "click" && !/\{/.test(s.selector || "") ? ` · <button type="button" class="linkish xs" data-tpl="symbol" title="click the result whose text is this order's {symbol}">use {symbol}</button>` : ""}</div>` : ""}</td>
+      <td>${val ? `<input class="sm mono" data-k="${val}" value="${esc(s[val] ?? "")}" placeholder="${val === "var" ? "variable name" : val}" aria-label="${val}">` : ""}</td>
+      <td><input type="checkbox" data-k="optional"${s.optional ? " checked" : ""} aria-label="optional"></td>
+      <td><input type="checkbox" data-k="final"${s.final ? " checked" : ""} aria-label="final"></td>
+      <td class="nowrap"><button type="button" class="sm" data-mv="-1" aria-label="Move up">↑</button><button type="button" class="sm" data-mv="1" aria-label="Move down">↓</button><button type="button" class="sm" data-del aria-label="Delete step">×</button></td></tr>`; }).join("")
+    || `<tr><td colspan="7" class="t3">No steps. Press <b>● Record</b> and click through the web terminal, or add steps by hand.</td></tr>`;
+}
+$("#oa-steps tbody").addEventListener("change", e => {
+  const tr = e.target.closest("tr[data-i]"), k = e.target.dataset.k; if (!tr || !k) return;
+  const s = OA.steps[+tr.dataset.i];
+  if (e.target.type === "checkbox") { if (e.target.checked) s[k] = true; else delete s[k]; }
+  else if (["ms", "dy", "x", "y"].includes(k)) s[k] = parseFloat(e.target.value) || 0;
+  else s[k] = e.target.value;
+  if (k === "action") oaRenderSteps();
+});
+$("#oa-steps tbody").addEventListener("click", e => {
+  const tr = e.target.closest("tr[data-i]"); if (!tr) return;
+  const i = +tr.dataset.i;
+  if (e.target.closest("[data-tpl]")) { const v = e.target.closest("[data-tpl]").dataset.tpl, st = OA.steps[i];
+    OA.steps[i] = st.row_tpl ? { action: "click", selector: st.row_tpl.replace("{symbol}", `{${v}}`), note: st.note, ...(st.final ? { final: true } : {}) }
+      : st.list ? { action: "click_item", selector: st.list, value: `{${v}}`, note: st.note } : { ...st, ...OA_TPL(v) }; }
+  else if (e.target.closest("[data-del]")) OA.steps.splice(i, 1);
+  else if (e.target.closest("[data-mv]")) { const j = i + +e.target.closest("[data-mv]").dataset.mv;
+    if (j < 0 || j >= OA.steps.length) return; [OA.steps[i], OA.steps[j]] = [OA.steps[j], OA.steps[i]]; }
+  else return;
+  oaRenderSteps();
+});
+$("#oa-addstep").onclick = () => { OA.steps.push({ action: "wait", ms: 1000 }); oaRenderSteps(); };
+async function oaSaveFlow(msg = "saved") {
+  const f = await api(oaU(`/api/openaiap/flows/${encodeURIComponent(OA.flow)}`), { method: "PUT", json: { steps: OA.steps } });
+  OA.flows[OA.flow] = f; OA.steps = oaClone(f.steps); oaFlowOptions(); oaRenderSteps();
+  $("#oa-run-msg").innerHTML = `<span class="green">${esc(OA.flow)}: ${msg} · ${f.steps.length} steps${["buy", "sell", "close"].includes(OA.flow) && !f.steps.some(s => s.final) ? ` <span class="amber">· mark the step that places the order as final</span>` : ""}</span>`;
+}
+$("#oa-save").onclick = async () => { try { await oaSaveFlow(); } catch (e) { oaErr("#oa-run-msg", e); } };
+$("#oa-delflow").onclick = async () => {
+  if (!confirmTwice($("#oa-delflow"), `Click again to delete ${OA.flow}`)) return;
+  try { await api(oaU(`/api/openaiap/flows/${encodeURIComponent(OA.flow)}`), { method: "DELETE" }); delete OA.flows[OA.flow]; oaPickFlow(OA.flow); }
+  catch (e) { oaErr("#oa-run-msg", e); }
+};
+
+// ---- test runs
+function oaVars() {
+  const v = {}; ["symbol", "query", "qty", "price", "sl", "target", "side"].forEach(k => { const x = $("#oa-v-" + k).value.trim(); if (x !== "") v[k] = x; });
+  return v;
+}
+function oaRunHTML(r) {
+  return `<div class="tscroll"><table class="tbl"><thead><tr><th>#</th><th>Step</th><th>Result</th><th class="r">ms</th></tr></thead><tbody>${(r.steps || []).map(s =>
+    `<tr><td>${s.i}</td><td>${esc(s.action)}</td><td>${s.ok === null ? `<span class="amber">${esc(s.note)}</span>` : s.ok ? '<span class="green">ok</span>' : `<span class="red">${esc(s.error || "failed")}</span>`}</td><td class="r">${s.ms ?? ""}</td></tr>`).join("")}</tbody></table></div>`
+    + (Object.keys(r.vars || {}).length ? `<p class="xs">read: ${esc(JSON.stringify(r.vars))}</p>` : "");
+}
+async function oaRun(dry) {
+  $("#oa-run-msg").innerHTML = `<span class="spin"></span> running ${esc(OA.flow)}${dry ? " (stops before final)" : ""}…`;
+  try {
+    const r = await api(oaU(`/api/openaiap/flows/${encodeURIComponent(OA.flow)}/run`), { json: { vars: oaVars(), dry, confirm: !dry } });
+    $("#oa-run-msg").innerHTML = r.ok ? `<span class="green">${esc(OA.flow)} ran in ${(r.ms / 1000).toFixed(1)} s${r.dry ? " · final step skipped" : ""}${r.workers_resynced ? ` · ${r.workers_resynced} worker tab${r.workers_resynced > 1 ? "s" : ""} took this login` : ""}</span>` : `<span class="red">${esc(r.error)}</span>`;
+    $("#oa-run-out").innerHTML = oaRunHTML(r); oaScreen();
+  } catch (e) { oaErr("#oa-run-msg", e); }
+}
+$("#oa-test").onclick = () => oaRun(true);
+$("#oa-real").onclick = () => { if (confirmTwice($("#oa-real"), "Click again: this places a real order")) oaRun(false); };
+
+// ---- browser + recorder
+async function oaScreen() {
+  if (curTab !== "oa" || document.hidden || !OA.open) return;
+  try {
+    const r = await fetch(oaU(`/api/openaiap/browser/screen?w=${$("#oa-wsel").value || 0}`), { headers: { "X-Admin-Token": TOKEN } });
+    if (r.status !== 200) return;
+    const img = $("#oa-img"), old = img.src;
+    img.src = URL.createObjectURL(await r.blob()); $("#oa-empty").hidden = true;
+    if (old.startsWith("blob:")) URL.revokeObjectURL(old);
+  } catch (e) {}
+}
+setInterval(oaScreen, 700);
+function oaApplyBrowser(b) {
+  if (!b) return;
+  OA.open = b.open;
+  if (!b.open) { $("#oa-img").removeAttribute("src"); $("#oa-empty").hidden = false; }
+  if (b.url && b.url !== OA.lastUrl && document.activeElement !== $("#oa-url")) { $("#oa-url").value = b.url; OA.lastUrl = b.url; }
+  const rec = b.recording;
+  $("#oa-rec").textContent = rec ? "■ Stop recording" : "● Record";
+  $("#oa-rec").classList.toggle("danger", !!rec); $("#oa-rec").classList.toggle("primary", !rec);
+  $("#oa-screen").classList.toggle("rec", !!rec);
+  $("#oa-rec-state").innerHTML = rec ? `<span class="red">● recording ${esc(rec.flow)} · ${rec.steps} steps</span>` : b.busy ? `<span class="amber">running the ${esc(b.busy)} flow</span>` : b.open ? esc(b.title || "") : "browser closed";
+}
+async function oaAct(a) {
+  $("#oa-msg").innerHTML = `<span class="spin"></span> ${esc(a.type)}…`;
+  try {
+    const r = await api(oaU("/api/openaiap/browser/act"), { json: a });
+    if (r.select) { oaSelectPick(a, r.select); $("#oa-msg").textContent = "choose an option"; return r; }
+    if (r.recorded) { OA.steps = oaClone(r.recorded); oaRenderSteps(); }
+    if (a.type === "click") oaTypingTarget(r.element && r.element.editable ? r.element : null);
+    const s = r.step;
+    $("#oa-msg").innerHTML = s ? `<span class="green">${esc(s.action)}</span> <span class="mono xs">${esc(s.selector || s.url || s.key || s.dy || "")}</span>${s.value ? ` = <span class="mono xs">${esc(s.value)}</span>` : ""}` : esc(r.note || "done");
+    oaApplyBrowser(r.browser); setTimeout(oaScreen, 150);
+    return r;
+  } catch (e) { oaErr("#oa-msg", e); }
+}
+// ---- typing straight from the keyboard: after a click into a field, keys go to that field (one fill per field)
+function oaTypingTarget(el) {
+  if (OA.typing) clearTimeout(OA.typing.timer);
+  OA.typing = el ? { el, text: "", timer: null } : null;
+  oaShowTyping();
+  if (el) $("#oa-screen").focus();
+}
+function oaShowTyping() {
+  const t = OA.typing, box = $("#oa-typing");
+  box.hidden = !t;
+  if (!t) return;
+  const pw = t.el.type === "password", as = $("#oa-as").value;
+  box.innerHTML = `<span>⌨ typing into <b class="mono">${esc(t.el.selectors[0])}</b>${pw ? " (password → saved as a secret)" : ""}${as ? ` · recorded as <code>${esc(as)}</code>` : ""}:</span>
+    <span class="mono">${t.text ? esc(pw ? "•".repeat(t.text.length) : t.text) : '<span class="t3">type now…</span>'}</span>`;
+}
+function oaFlushTyping() {
+  const t = OA.typing; if (!t) return Promise.resolve();
+  clearTimeout(t.timer); t.timer = null;
+  return oaAct({ type: "fill", text: t.text, as: $("#oa-as").value || undefined, update: true }).then(r => {
+    if (r && r.step && /secret:/.test(r.step.value || "")) api(oaU("/api/openaiap/status")).then(st => oaAsOptions(st)).catch(() => {});
+  });
+}
+function oaTyped(text) {
+  const t = OA.typing; if (!t) return;
+  t.text = text; oaShowTyping();
+  clearTimeout(t.timer); t.timer = setTimeout(oaFlushTyping, 450);
+}
+$("#oa-screen").addEventListener("keydown", async e => {
+  if (e.target !== $("#oa-screen")) return;
+  const t = OA.typing;
+  if (e.ctrlKey || e.metaKey) { if (t && e.key.toLowerCase() === "a") e.preventDefault(); return; }   // paste comes as a paste event
+  if (["Enter", "Tab", "Escape"].includes(e.key)) {
+    e.preventDefault();
+    if (t && t.timer) await oaFlushTyping();
+    oaTypingTarget(null);
+    oaAct({ type: "press", key: e.key });
+    return;
+  }
+  if (!t) return;
+  if (e.key === "Backspace") { e.preventDefault(); oaTyped(t.text.slice(0, -1)); }
+  else if (e.key.length === 1) { e.preventDefault(); oaTyped(t.text + e.key); }
+});
+$("#oa-screen").addEventListener("paste", e => {
+  if (!OA.typing) return;
+  e.preventDefault(); oaTyped(OA.typing.text + (e.clipboardData.getData("text") || ""));
+});
+$("#oa-as").addEventListener("change", () => { if (OA.typing) { oaShowTyping(); if (OA.typing.text) oaFlushTyping(); } });
+$("#oa-img").onclick = async e => {
+  if ($("#oa-wsel").value !== "0") { $("#oa-msg").textContent = "worker tabs are view-only - switch the screen to main to click"; return; }
+  const r = e.currentTarget.getBoundingClientRect();
+  if (OA.typing && OA.typing.timer) await oaFlushTyping();      // the text still waiting belongs to the field before
+  const x = Math.round((e.clientX - r.left) * OA_W / r.width), y = Math.round((e.clientY - r.top) * OA_H / r.height);
+  const m = $("#oa-cmode").value;
+  if (m === "inspect") oaInspect(x, y); else oaAct({ type: m === "hover" ? "hover" : "click", x, y, exact: m === "exact" || undefined });
+};
+$("#oa-cmode").onchange = () => $("#oa-screen").classList.toggle("inspect", $("#oa-cmode").value !== "click");
+function oaSelectPick(a, d) {
+  $("#oa-pick").hidden = false;
+  $("#oa-pick").innerHTML = `<span class="xs t3">drop-down <span class="mono">${esc(d.selectors[0])}</span>:</span>` + (d.options || []).map(o =>
+    `<button type="button" class="sm" data-v="${esc(o.value)}">${esc(o.label || o.value)}</button>`).join("") + `<button type="button" class="sm" data-x>cancel</button>`;
+  $$("#oa-pick button").forEach(b => b.onclick = () => { $("#oa-pick").hidden = true;
+    if (b.dataset.v !== undefined) oaAct({ type: "select", x: a.x, y: a.y, value: b.dataset.v, as: $("#oa-as").value || undefined }); });
+}
+async function oaInspect(x, y) {
+  try {
+    const r = await api(oaU("/api/openaiap/browser/act"), { json: { type: "inspect", x, y } }), d = r.element;
+    if (!d) { $("#oa-msg").textContent = "nothing there"; return; }
+    const sel = d.selectors[0], alt = d.selectors.slice(1, 4);
+    $("#oa-pick").hidden = false;
+    $("#oa-pick").innerHTML = `<span class="xs"><span class="mono">${esc(sel)}</span>${d.text ? ` · “${esc(d.text)}”` : ""}</span>
+      ${d.list ? `<button type="button" class="sm primary" data-a="extract_list" data-var="names">read all like this</button>` : ""}
+      <button type="button" class="sm" data-a="wait_value" title="e.g. the order price: the flow stops before Place Order if it stays empty / 0">wait until it has a value</button>
+      <button type="button" class="sm" data-a="wait_for">wait for it</button><button type="button" class="sm" data-a="click">click it</button><button type="button" class="sm" data-a="hover">hover it</button>
+      <button type="button" class="sm" data-a="extract" data-var="fill_price">read as {fill_price}</button><button type="button" class="sm" data-a="extract" data-var="">read as variable…</button>
+      <button type="button" class="sm" data-a="expect_text">expect its text</button><button type="button" class="sm" data-x>cancel</button>`;
+    $$("#oa-pick button").forEach(b => b.onclick = async () => {
+      $("#oa-pick").hidden = true;
+      const act = b.dataset.a; if (!act) return;
+      let step = { action: act, selector: sel, alt, note: d.text || d.tag };
+      if (act === "extract") { const v = b.dataset.var || (prompt("Variable name (e.g. order_id)") || "").trim(); if (!v) return; step.var = v; }
+      if (act === "extract_list") step = { action: act, selector: d.list, var: "names", note: `list like “${d.first || d.text}”` };
+      if (act === "expect_text") step = { action: act, text: d.text || "" };
+      if (OA.st && OA.st.browser.recording) await oaAct({ type: "add", step });
+      else { OA.steps.push(step); oaRenderSteps(); $("#oa-msg").innerHTML = `<span class="green">${esc(act)} step added - Save flow to keep it</span>`; }
+    });
+  } catch (e) { oaErr("#oa-msg", e); }
+}
+$("#oa-go").onclick = () => { const u = $("#oa-url").value.trim(); if (u) oaAct({ type: "goto", url: u }); };
+$("#oa-url").onkeydown = e => { if (e.key === "Enter") $("#oa-go").click(); };
+$("#oa-back").onclick = () => oaAct({ type: "back" });
+$("#oa-reload").onclick = () => oaAct({ type: "reload" });
+$("#oa-up").onclick = () => oaAct({ type: "scroll", dy: -400 });
+$("#oa-down").onclick = () => oaAct({ type: "scroll", dy: 400 });
+$("#oa-type").onclick = async () => {
+  if (OA.typing) { clearTimeout(OA.typing.timer); OA.typing = null; oaShowTyping(); }
+  const r = await oaAct({ type: "fill", text: $("#oa-text").value, as: $("#oa-as").value || undefined });
+  if (r) { $("#oa-text").value = ""; if (r.step && /secret:/.test(r.step.value || "")) oaLoad(true); }
+};
+$("#oa-text").onkeydown = e => { if (e.key === "Enter") $("#oa-type").click(); };
+$$("[data-oakey]").forEach(b => b.onclick = async () => { if (OA.typing && OA.typing.timer) await oaFlushTyping(); oaAct({ type: "press", key: b.dataset.oakey }); });
+$("#oa-bstart").onclick = async () => {
+  $("#oa-msg").innerHTML = `<span class="spin"></span> starting the browser…`;
+  try { const b = await api(oaU("/api/openaiap/browser/start"), { json: { url: $("#oa-url").value.trim() || null } }); oaApplyBrowser(b); $("#oa-msg").textContent = ""; oaScreen(); }
+  catch (e) { oaErr("#oa-msg", e); }
+};
+$("#oa-bstop").onclick = async () => { try { oaApplyBrowser(await api(oaU("/api/openaiap/browser/stop"), { method: "POST" })); } catch (e) { oaErr("#oa-msg", e); } };
+$("#oa-rec").onclick = async () => {
+  try {
+    if (OA.st && OA.st.browser.recording) {
+      const r = await api(oaU("/api/openaiap/record/stop"), { method: "POST" });
+      OA.steps = oaClone(r.steps || []);
+      if (OA.recUrl) OA.steps.unshift({ action: "goto", url: OA.recUrl });
+      OA.recUrl = null;
+      await oaSaveFlow("recorded and saved");
+    } else {
+      if (!OA.open) throw new Error("start the browser first");
+      if (["buy", "sell", "close"].includes(OA.flow) && !$("#oa-v-symbol").value.trim())
+        throw new Error("fill {symbol} below with the name of the row / result you will click (e.g. ABB 23NOV2026) first - then that click follows each order's symbol");
+      await api(oaU("/api/openaiap/record/start"), { json: { flow: OA.flow, samples: { symbol: $("#oa-v-symbol").value.trim(), query: $("#oa-v-query").value.trim() } } });
+      OA.recUrl = $("#oa-rec-goto").checked ? (OA.lastUrl || $("#oa-url").value.trim() || null) : null;
+      OA.steps = []; oaRenderSteps();
+    }
+    oaLoad(false);
+  } catch (e) { oaErr("#oa-msg", e); }
+};
+function oaAsOptions(st) {
+  const cur = $("#oa-as").value;
+  $("#oa-as").innerHTML = `<option value="">the text itself</option>` + (st.vars || []).map(v => `<option value="{${v}}">{${v}}</option>`).join("")
+    + (st.secrets || []).map(n => `<option value="{secret:${esc(n)}}">{secret:${esc(n)}}</option>`).join("");
+  $("#oa-as").value = cur;
+}
+
+// ---- settings + secrets
+function oaFillCfg(c) {
+  $("#oa-mode").value = c.mode; $("#oa-account").value = c.account; $("#oa-start").value = c.start_url || "";
+  $("#oa-maxv").value = c.max_volume; $("#oa-maxp").value = c.max_positions; $("#oa-tmo").value = c.step_timeout_s; $("#oa-relogin").checked = !!c.relogin;
+  $("#oa-workers").value = c.workers || 1;
+  $("#oa-live-l").hidden = c.mode !== "live"; $("#oa-live").placeholder = c.live_confirm ? "confirmed" : c.live_phrase;
+}
+$("#oa-mode").onchange = () => { $("#oa-live-l").hidden = $("#oa-mode").value !== "live"; };
+$("#oa-cfg-save").onclick = async () => {
+  const body = { mode: $("#oa-mode").value, account: $("#oa-account").value, start_url: $("#oa-start").value.trim(), max_volume: parseFloat($("#oa-maxv").value),
+    max_positions: parseInt($("#oa-maxp").value), step_timeout_s: parseFloat($("#oa-tmo").value) || 10, relogin: $("#oa-relogin").checked,
+    workers: parseInt($("#oa-workers").value) || 1 };
+  if (body.mode === "live") body.live_confirm = $("#oa-live").value.trim();
+  try { await api(oaU("/api/openaiap/config"), { method: "PUT", json: body }); $("#oa-live").value = "";
+    $("#oa-cfg-msg").innerHTML = `<span class="green">saved: mode ${esc(body.mode)}</span>`; oaLoad(true); }
+  catch (e) { oaErr("#oa-cfg-msg", e); }
+};
+function oaRenderSecrets(names) {
+  $("#oa-secrets").innerHTML = names.map(n => `<li>${esc(n)} <button type="button" class="x" data-sec="${esc(n)}" aria-label="Remove secret ${esc(n)}">×</button></li>`).join("") || `<li class="t3">none yet</li>`;
+  $$("#oa-secrets [data-sec]").forEach(b => b.onclick = async () => { try { oaRenderSecrets(await api(oaU("/api/openaiap/secrets"), { method: "PUT", json: { [b.dataset.sec]: "" } })); } catch (e) { oaErr("#oa-cfg-msg", e); } });
+}
+$("#oa-sec-save").onclick = async () => {
+  const n = $("#oa-sec-n").value.trim().toLowerCase(), v = $("#oa-sec-v").value;
+  if (!n || !v) return;
+  try { oaRenderSecrets(await api(oaU("/api/openaiap/secrets"), { method: "PUT", json: { [n]: v } })); $("#oa-sec-n").value = $("#oa-sec-v").value = ""; oaLoad(true); }
+  catch (e) { oaErr("#oa-cfg-msg", e); }
+};
+
+// ---- automation (same zone rules as the MT5 tab)
+function oaParams() {
+  return { max_cycles: parseInt($("#oa-cyc").value) || 2, target_base: $("#oa-base").value, spike: $("#oa-spike").checked, allow_short: $("#oa-short").checked,
+    lot_targets: $("#oa-lots").value.split(/[\s,]+/).map(parseFloat).filter(x => !isNaN(x)), entry_cutoff: $("#oa-cutoff").value || "14:30",
+    square_off: $("#oa-sq").value || "15:15", max_zone_pct: parseFloat($("#oa-maxz").value) || 100 };
+}
+function oaFillParams(p) {
+  $("#oa-cyc").value = p.max_cycles ?? 2; $("#oa-base").value = p.target_base || "zone"; $("#oa-spike").checked = p.spike !== false;
+  $("#oa-short").checked = p.allow_short !== false; $("#oa-lots").value = (p.lot_targets || [p.target_mult || 1.5]).join(", ");
+  $("#oa-cutoff").value = p.entry_cutoff || "14:30"; $("#oa-sq").value = p.square_off || "15:15";
+  $("#oa-maxz").value = p.max_zone_pct && p.max_zone_pct < 100 ? p.max_zone_pct : "";
+}
+$("#oa-copy").onclick = async () => {
+  try { const a = await api("/api/mt5/auto"); oaFillParams(a.params);
+    if (a.symbols.length) { $("#oa-symbols").value = a.symbols.join(","); $("#oa-symbols").dispatchEvent(new Event("sp:refresh")); oaRenderMap(); }
+    $("#oa-auto-msg").textContent = "copied from the MT5 tab - press Save settings (or Start automation)"; }
+  catch (e) { oaErr("#oa-auto-msg", e); }
+};
+async function oaSaveAuto(extra = {}) {
+  try { const a = await api(oaU("/api/openaiap/auto"), { method: "PUT", json: { symbols: syms("#oa-symbols"), watchlist: $("#oa-wl").value, params: oaParams(), ...extra } });
+    $("#oa-auto-msg").innerHTML = `<span class="green">${a.enabled ? "automation ON" : "saved (automation off)"} · ${a.symbols.length} symbols</span>`; oaLoad(false); }
+  catch (e) { oaErr("#oa-auto-msg", e); }
+}
+$("#oa-asave").onclick = () => oaSaveAuto();
+$("#oa-astart").onclick = () => oaSaveAuto({ enabled: true });
+$("#oa-astop").onclick = () => oaSaveAuto({ enabled: false });
+$("#oa-kill").onclick = async () => {
+  if (!confirmTwice($("#oa-kill"), "Click again to stop and close all")) return;
+  try { const r = await api(oaU("/api/openaiap/close-all"), { method: "POST" });
+    $("#oa-msg").innerHTML = `<span class="amber">automation stopped${r.close_sent ? "; closing the positions through the web flows" : " (flows not ready - nothing sent)"}</span>`; oaLoad(false); }
+  catch (e) { oaErr("#oa-msg", e); }
+};
+$("#oa-forget").onclick = async () => {
+  if (!confirmTwice($("#oa-forget"), "Click again: forget (nothing is sent)")) return;
+  try { await api(oaU("/api/openaiap/positions/forget"), { method: "POST" }); oaLoad(false); } catch (e) { oaErr("#oa-msg", e); }
+};
+
+// ---- mapping (+ symbols read from the website)
+function oaRenderMap() {
+  const q = {}; ((OA.st || {}).quotes || []).forEach(x => q[x.symbol] = x);
+  const draft = {};
+  $$("#oa-map tbody tr[data-s]").forEach(tr => { draft[tr.dataset.s] = { web: tr.querySelector(".oa-web").value, query: tr.querySelector(".oa-q").value, volume: tr.querySelector(".oa-vol").value }; });
+  const mine = syms("#oa-symbols"), autos = (OA.st && OA.st.automations) || [];
+  const usedBy = s => autos.filter(x => (x.symbol_list || []).includes(s)).map(x => `<span class="${x.enabled ? "green" : "t3"}">${esc(x.name)}</span>`).join(", ") || '<span class="t3">none</span>';
+  const rows = [...new Set([...mine, ...($("#oa-map-all").checked ? Object.keys(OA.map) : [])])], sug = OA.sug || {};
+  $("#oa-map tbody").innerHTML = rows.map((s, i) => { const m = { ...(OA.map[s] || {}), ...(draft[s] || {}) }, g = sug[s] || {}, ex = g.expiry || {};
+    return `<tr data-s="${esc(s)}"><td><b>${esc(s)}</b>${mine.includes(s) ? "" : '<div class="xs t3">not in this automation</div>'}</td><td class="xs">${usedBy(s)}</td><td class="xs t3">${esc(ex.trading_symbol || (ex.month ? `${ex.month} ${ex.year}` : (s.endsWith("-FUT") ? "near month" : "cash")))}</td>
+      <td><input class="sm mono oa-q" value="${esc(m.query || "")}" placeholder="${esc(s.replace(/-(FUT|EQ|I|BE)$/, ""))}" aria-label="Search text for ${esc(s)}"></td>
+      <td><input class="sm mono oa-web" list="oa-dl-${i}" value="${esc(m.web || "")}" placeholder="as the website shows it" aria-label="Web symbol for ${esc(s)}">
+        <datalist id="oa-dl-${i}">${(g.candidates || []).map(n => `<option value="${esc(n)}">`).join("")}</datalist>${g.web && g.web !== m.web ? `<div class="xs amber">suggested: ${esc(g.web)}</div>` : ""}${(OA.lk || {})[s] ? ((OA.lk[s].web) ? `<div class="xs green">✓ found on the website</div>` : `<div class="xs red">not found: ${esc(OA.lk[s].error || "")}</div>`) : ""}</td>
+      <td class="r"><input class="sm oa-vol" type="number" min="0" step="any" value="${m.volume ?? 1}" aria-label="Quantity per lot"></td><td class="r">${m5num((q[s] || {}).ltp)}</td>
+      <td class="nowrap">${OA.map[s] ? `<button type="button" class="sm" data-oat="BUY">buy</button> <button type="button" class="sm" data-oat="SELL">sell</button> <button type="button" class="sm" data-oat="CLOSE">close</button>` : '<span class="xs t3">save mapping first</span>'}</td></tr>`; }).join("")
+    || `<tr><td colspan="8" class="t3">Choose symbols (or a watchlist) in Automation first.</td></tr>`;
+  $$("#oa-map [data-oat]").forEach(b => b.onclick = () => oaTestOrder(b, b.closest("tr").dataset.s, b.dataset.oat));
+}
+$("#oa-map-save").onclick = async () => {
+  const out = {};
+  Object.entries(OA.map).forEach(([k, v]) => { out[k] = { web: v.web, query: v.query, volume: v.volume }; });   // rows not shown stay mapped
+  $$("#oa-map tbody tr[data-s]").forEach(tr => { const v = tr.querySelector(".oa-web").value.trim();
+    if (v) out[tr.dataset.s] = { web: v, query: tr.querySelector(".oa-q").value.trim(), volume: parseFloat(tr.querySelector(".oa-vol").value) || 1 };
+    else delete out[tr.dataset.s]; });                                   // an emptied web symbol removes the mapping
+  try { await api(oaU("/api/openaiap/mapping"), { method: "PUT", json: { mapping: out } }); OA.map = await api(oaU("/api/openaiap/mapping"));
+    $("#oa-map tbody").innerHTML = ""; oaRenderMap(); $("#oa-map-msg").innerHTML = `<span class="green">${Object.keys(OA.map).length} symbols mapped</span>`; }
+  catch (e) { oaErr("#oa-map-msg", e); }
+};
+async function oaTestOrder(btn, sym, side) {
+  const real = $("#oa-test-real").checked;
+  if (real && !confirmTwice(btn, `REAL ${side}?`)) return;
+  $("#oa-map-msg").innerHTML = `<span class="spin"></span> ${real ? "placing" : "dry run of"} ${esc(side)} ${esc(sym)} through the web flow…`;
+  try {
+    const r = await api(oaU("/api/openaiap/test-order"), { json: { symbol: sym, side, dry: !real, confirm: real } });
+    $("#oa-map-msg").innerHTML = r.ok ? `<span class="green">${esc(side)} ${esc(sym)} → ${esc(r.web)} × ${esc(r.qty)}: ${r.dry ? "every step worked; stopped before the final step" : "order placed"} (${((r.ms || 0) / 1000).toFixed(1)} s)</span>`
+      : `<span class="red">${esc(side)} ${esc(sym)}: ${esc(r.error || r.desc)}</span>`;
+    $("#oa-test-out").innerHTML = oaRunHTML(r) + (r.vars_used ? `<p class="xs t3">variables: ${esc(JSON.stringify(r.vars_used))}</p>` : "");
+    oaScreen(); oaLoad(false);
+  } catch (e) { oaErr("#oa-map-msg", e); }
+}
+const oaMapSyms = () => $$("#oa-map tbody tr[data-s]").map(tr => tr.dataset.s);
+async function oaSuggest(fillEmpty = true) {
+  const rows = oaMapSyms(); if (!rows.length) return;
+  OA.sug = await api(oaU("/api/openaiap/symbols/suggest"), { json: { symbols: rows } });
+  let n = 0;
+  $$("#oa-map tbody tr[data-s]").forEach(tr => { const g = OA.sug[tr.dataset.s] || {}, inp = tr.querySelector(".oa-web");
+    if (fillEmpty && !inp.value.trim() && g.web) { inp.value = g.web; n++; } });
+  oaRenderMap();
+  const miss = rows.filter(s => !(OA.sug[s] || {}).web);
+  $("#oa-map-msg").innerHTML = (n ? `<span class="green">${n} filled from the website's names - check, then Save mapping</span>` : `<span class="t3">nothing new to fill (the drop-down of each row lists what was found)</span>`)
+    + (miss.length ? `<br><span class="amber">no match on the website: ${esc(miss.join(", "))}</span>` : "");
+}
+$("#oa-suggest").onclick = () => oaSuggest().catch(e => oaErr("#oa-map-msg", e));
+$("#oa-symfetch").onclick = async () => {
+  try {
+    await api(oaU("/api/openaiap/symbols/fetch"), { json: { symbols: oaMapSyms() } });
+    const t0 = Date.now();
+    while (Date.now() - t0 < 30 * 60000) {
+      await new Promise(r => setTimeout(r, 1500));
+      const r = await api(oaU("/api/openaiap/symbols")), j = r.job;
+      OA.lk = r.lookups;
+      $("#oa-map-msg").innerHTML = `<span class="spin"></span> searching the website ${j.done || 0} / ${j.total || 0} · ${j.mode === "lookup" ? Object.keys(j.found || {}).length : r.count} found`;
+      if (!j.running) {
+        if (j.mode === "lookup") {
+          OA.map = await api(oaU("/api/openaiap/mapping")); $("#oa-map tbody").innerHTML = ""; oaRenderMap();
+          $("#oa-map-msg").innerHTML = `<span class="green">${Object.keys(j.found || {}).length} of ${j.total} symbols found on the website and saved in the mapping</span>`
+            + ((j.errors || []).length ? `<br><span class="red">${esc(j.errors.slice(0, 8).join(" · "))}</span>` : "");
+          return;
+        }
+        await oaSuggest();
+        if ((j.errors || []).length) $("#oa-map-msg").innerHTML += `<br><span class="red">${esc(j.errors.slice(0, 5).join(" · "))}</span>`;
+        return;
+      }
+    }
+  } catch (e) { oaErr("#oa-map-msg", e); }
+};
+
+// ---- dashboard
+function oaRender(st) {
+  OA.st = st;
+  const c = st.config, tr = st.trader || {}, fl = st.flows || {};
+  const card = (k, v, sub = "", cl = "") => `<div class="card"><div class="k">${k}</div><div class="v ${cl}">${v}</div>${sub ? `<div class="s">${sub}</div>` : ""}</div>`;
+  const fx = n => `${fl[n] ? '<span class="green">✓</span>' : '<span class="t3">·</span>'} ${n}${fl[n] && ["buy", "sell", "close"].includes(n) && !fl[n].final ? '<span class="amber" title="no final step">*</span>' : ""}`;
+  $("#oa-cards").innerHTML = card("Browser", st.browser.open ? "open" : "closed", esc(st.browser.busy ? `running ${st.browser.busy}` : (st.browser.title || st.browser.url || "")), st.browser.open ? "green" : "")
+    + card("Flows", st.missing_flows.length ? `${2 - st.missing_flows.length}/2 ready` : "ready", OA_FLOWS.map(fx).join(" · "), st.missing_flows.length ? "amber" : "green")
+    + card("Executor", st.health.connected ? "ready" : "not ready", esc(st.health.message), st.health.connected ? "green" : "amber")
+    + card("Mode", esc({ off: "Off", dry_run: "Dry run", demo: "Demo", live: "LIVE" }[c.mode] || c.mode), `web ID: ${c.account === "real" ? '<span class="red">real money</span>' : "demo"}`, c.mode === "live" ? "red" : "")
+    + card("Automation", st.auto.enabled ? "ON" : "off", `${st.auto.symbols.length} symbols${tr.halted ? " · STOPPED: " + esc(tr.halted) : ""}`, st.auto.enabled ? "green" : "");
+  $("#oa-auto-state").textContent = st.auto.enabled ? "running" : "stopped";
+  oaApplyBrowser(st.browser);
+  $("#oa-day").textContent = tr.day || "";
+  const sy = tr.symbols || {}, P = st.pnl || {};
+  $("#oa-board tbody").innerHTML = Object.entries(sy).map(([s, x]) => { const open = (x.legs || []).filter(l => l.status === "open" || l.status === "sending");
+    const status = x.skip ? `<span class="amber">${esc(x.skip)}</span>` : x.done ? esc(x.done) : open.length ? `<span class="pill ${open[0].side === "BUY" ? "buy" : "sell"} xs">${open[0].side}</span> ${open.length} lot${open.length > 1 ? "s" : ""}` : x.zone ? "waiting for a break" : "waiting for the zone";
+    const pl = (P.symbols || {})[s] || {};
+    return `<tr><td><b>${esc(s)}</b></td><td class="mono">${x.zone ? `${fmt(x.zone.low)} – ${fmt(x.zone.high)}` : "—"}</td><td>${status}</td><td class="r">${x.cycles || 0}</td>
+      <td class="r ${cls(pl.calls)}">${pl.calls != null ? inrS(pl.calls) : "—"}</td>
+      <td class="xs">${(x.legs || []).slice(-6).map(l => `${l.side[0]}${l.lot} ${l.target != null ? "→" + fmt(l.target) : ""} <span class="t3">${esc(l.closed_why || l.status)}</span>`).join(" · ")}</td></tr>`; }).join("")
+    || `<tr><td colspan="6" class="t3">${st.auto.enabled ? "waiting for the market (09:15-15:30) and live prices" : "automation is off"}</td></tr>`;
+  $("#oa-board tfoot").innerHTML = Object.keys(sy).length ? `<tr><td colspan="4"><b>Total</b></td><td class="r ${cls(P.total_calls)}"><b>${inrS(P.total_calls || 0)}</b></td><td></td></tr>` : "";
+  $("#oa-events").innerHTML = (tr.events || []).slice().reverse().map(e => `<li class="${e.level === "error" ? "red" : e.level === "warn" ? "amber" : ""}"><span class="mono t3">${esc(e.t)}</span> <b>${esc(e.symbol)}</b> ${esc(e.text)}</li>`).join("") || `<li class="t3">nothing yet</li>`;
+  $("#oa-pos tbody").innerHTML = (st.positions || []).map(p => `<tr><td>${esc(p.symbol)}</td><td><span class="pill ${p.type === "buy" ? "buy" : "sell"} xs">${esc(p.type.toUpperCase())}</span></td>
+    <td class="r">${p.volume}</td><td class="r">${p.price_open != null ? fmt(p.price_open) : "—"}</td><td class="mono xs">${esc(p.opened || "")}</td><td class="xs t3">${esc(p.comment || "")}</td></tr>`).join("") || `<tr><td colspan="6" class="t3">none</td></tr>`;
+  oaRenderSecrets(st.secrets || []);
+  const ws = st.workers || [];
+  $("#oa-workers-t tbody").innerHTML = ws.map(w => `<tr><td><b>${esc(w.name)}</b></td><td>${w.open ? '<span class="green">open</span>' : '<span class="t3">not opened</span>'}</td>
+    <td>${w.busy ? `<span class="amber">${esc(w.busy)}</span>` : '<span class="t3">idle</span>'}</td><td class="xs">${esc((w.symbols || []).join(", ")) || '<span class="t3">—</span>'}</td>
+    <td class="xs">${w.staged ? `<span class="green">${esc(w.staged)}</span>` : '<span class="t3">—</span>'}</td>
+    <td class="xs red">${esc(w.error || "")}</td></tr>`).join("");
+  const cur = $("#oa-wsel").value;
+  $("#oa-wsel").innerHTML = ws.map((w, i) => `<option value="${i === 0 ? 0 : w.name.slice(1)}">${i === 0 ? "main (recorder)" : esc(w.name) + (w.symbols.length ? " · " + esc(w.symbols.slice(0, 3).join(", ")) : "")}</option>`).join("");
+  $("#oa-wsel").value = [...$("#oa-wsel").options].some(o => o.value === cur) ? cur : "0";
+}
+async function oaLog() {
+  try {
+    const rows = await api(oaU("/api/openaiap/log?limit=150"));
+    $("#oa-log tbody").innerHTML = rows.map(r => {
+      const d = r.detail || {}, res = d.result || {}, t = d.trade || {}, v = res.vars_used || d.vars || {};
+      const side = t.side || v.side;
+      const txt = res.error || d.why || (r.kind === "order" && t.why ? `close: ${t.why}` : "") || (res.relogin ? `logged in again: ${res.relogin.ok ? "ok" : res.relogin.error}` : "") || (d.dry ? "dry run" : "");
+      return `<tr><td class="mono xs">${esc(m5Ist(r.ts))}</td><td>${esc(r.kind)}</td><td>${esc(r.symbol || "")}<div class="xs t3">${esc(t.symbol || v.symbol || "")}</div></td><td>${esc(r.op || "")}</td>
+        <td>${side ? `<span class="pill ${side === "BUY" ? "buy" : "sell"} xs">${esc(side)}</span>` : ""}</td><td class="r">${t.volume ?? v.qty ?? ""}</td>
+        <td class="r">${res.price != null ? fmt(res.price) : t.price != null ? fmt(t.price) : ""}</td>
+        <td>${r.ok == null ? "" : r.ok ? '<span class="green">ok</span>' : '<span class="red">no</span>'}</td><td class="r">${r.latency_ms != null ? fmt(r.latency_ms, 0) : ""}</td><td class="xs t3">${esc(txt)}</td></tr>`; }).join("")
+      || `<tr><td colspan="10" class="t3">no flow runs yet</td></tr>`;
+  } catch (e) {}
+}
+// ---- live view of every worker
+const OAL = { timer: null, shot: null };
+function oaLiveTiles(st) {
+  const ws = st.workers || [], ev = (st.trader || {}).events || [], pos = st.positions || [], webOf = {};
+  (st.quotes || []).forEach(q => webOf[q.symbol] = q.web);
+  const grid = $("#oa-live-grid");
+  ws.forEach((w, i) => {
+    const idx = i === 0 ? 0 : +w.name.slice(1);
+    let t = grid.querySelector(`[data-w="${idx}"]`);
+    if (!t) { t = document.createElement("div"); t.className = "oa-tile"; t.dataset.w = idx;
+      t.innerHTML = `<div class="oa-tile-h"></div><img alt="Screen of worker ${esc(w.name)}"><ol class="oa-tile-ev"></ol>`; grid.appendChild(t); }
+    const webs = new Set((w.symbols || []).map(s => webOf[s]));
+    const mine = pos.filter(p => webs.has(p.symbol));
+    t.classList.toggle("busy", !!w.busy); t.classList.toggle("ready", !w.busy && !!w.staged); t.classList.toggle("err", !!w.error);
+    t.querySelector(".oa-tile-h").innerHTML = `<b>${esc(w.name)}</b> <span class="mono">${esc((w.symbols || []).join(", ") || "—")}</span>
+      ${w.busy ? `<span class="pill xs amber">${esc(w.busy)}</span>` : w.staged ? `<span class="pill buy xs" title="prepared up to the final click">ready: ${esc(w.staged)}</span>` : `<span class="t3 xs">${w.open ? "idle" : "tab not open"}</span>`}
+      ${mine.map(p => `<span class="pill ${p.type === "buy" ? "buy" : "sell"} xs">${esc(p.type.toUpperCase())} ${p.volume}${p.price_open != null ? " @ " + fmt(p.price_open) : ""}</span>`).join(" ")}
+      ${w.error ? `<span class="xs red">${esc(w.error)}</span>` : ""}`;
+    t.querySelector(".oa-tile-ev").innerHTML = ev.filter(e => (w.symbols || []).includes(e.symbol)).slice(-4).reverse()
+      .map(e => `<li class="${e.level === "error" ? "red" : e.level === "warn" ? "amber" : ""}"><span class="mono t3">${esc(e.t)}</span> ${esc(e.symbol)} ${esc(e.text)}</li>`).join("") || `<li class="t3">no activity yet</li>`;
+  });
+  [...grid.children].forEach(t => { if (!ws.some((w, i) => String(i === 0 ? 0 : +w.name.slice(1)) === t.dataset.w)) t.remove(); });
+  $("#oa-live-sum").textContent = `${(OA.sites.find(x => x.id === OA.site) || {}).name || ""} · ${ws.length} worker${ws.length > 1 ? "s" : ""} · automation ${st.auto.enabled ? "ON" : "off"} · mode ${st.config.mode} · ${pos.length} open position${pos.length === 1 ? "" : "s"}`;
+}
+async function oaLiveShots() {
+  for (const t of $$("#oa-live-grid .oa-tile")) {
+    try {
+      const r = await fetch(oaU(`/api/openaiap/browser/screen?w=${t.dataset.w}`), { headers: { "X-Admin-Token": TOKEN } });
+      if (r.status !== 200) continue;
+      const img = t.querySelector("img"), old = img.src;
+      img.src = URL.createObjectURL(await r.blob());
+      if (old.startsWith("blob:")) URL.revokeObjectURL(old);
+    } catch (e) {}
+  }
+}
+async function oaLiveTick() {
+  if ($("#oa-lw").hidden || document.hidden) return;
+  try { const st = await api(oaU("/api/openaiap/status")); OA.st = st; oaLiveTiles(st); } catch (e) {}
+  oaLiveShots();
+}
+function oaLiveOpen() {
+  $("#oa-lw").hidden = false; document.body.style.overflow = "hidden";
+  oaLiveTick(); clearInterval(OAL.timer); OAL.timer = setInterval(oaLiveTick, 1200);
+}
+function oaLiveClose() { $("#oa-lw").hidden = true; document.body.style.overflow = ""; clearInterval(OAL.timer); }
+$("#oa-live-open").onclick = oaLiveOpen;
+$("#oa-live-x").onclick = oaLiveClose;
+document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("#oa-lw").hidden) oaLiveClose(); });
+$("#oa-live-kill").onclick = async () => {
+  if (!confirmTwice($("#oa-live-kill"), "Click again to stop and close all")) return;
+  try { const r = await api(oaU("/api/openaiap/close-all"), { method: "POST" }); $("#oa-live-sum").textContent = r.close_sent ? "automation stopped · closing every position" : "automation stopped"; }
+  catch (e) { $("#oa-live-sum").textContent = e.message; }
+};
+
+// ---- several websites: each with its own login, flows, mapping, workers and automation
+async function oaSites() {
+  try { OA.sites = await api("/api/openaiap/sites"); } catch (e) { return; }
+  if (!OA.sites.some(x => x.id === OA.site)) { OA.site = "default"; store.set("yx_oa_site", OA.site); }
+  $("#oa-site-tabs").innerHTML = OA.sites.map(x => `<button type="button" role="tab" class="oa-site${x.id === OA.site ? " on" : ""}" data-site="${esc(x.id)}" aria-selected="${x.id === OA.site}">
+    <b>${esc(x.name)}</b> <span class="xs t3">${esc({ off: "off", dry_run: "dry run", demo: "demo", live: "LIVE" }[x.mode] || x.mode)}${x.auto ? ' · <span class="green">auto ON</span>' : ""}${x.positions ? ` · ${x.positions} pos` : ""}</span></button>`).join("");
+  $$("#oa-site-tabs [data-site]").forEach(b => b.onclick = () => oaSwitch(b.dataset.site));
+  $("#oa-site-del").hidden = OA.site === "default";
+}
+function oaSwitch(id) {
+  if (id === OA.site) return;
+  OA.site = id; store.set("yx_oa_site", id); OA.aid = store.get("yx_oa_aid_" + id) || "main";
+  Object.assign(OA, { st: null, flows: {}, flow: "buy", steps: [], map: {}, open: false, lastUrl: null, loaded: false, sug: null, lk: null, typing: null });
+  $("#oa-img").removeAttribute("src"); $("#oa-empty").hidden = false; $("#oa-url").value = ""; $("#oa-map tbody").innerHTML = "";
+  $("#oa-run-out").innerHTML = $("#oa-test-out").innerHTML = ""; $("#oa-wsel").innerHTML = '<option value="0">main (recorder)</option>';
+  $("#oa-live-grid").innerHTML = "";
+  oaSites(); oaLoad(true);
+}
+$("#oa-site-add").onclick = async () => {
+  const name = (prompt("Name of the website (e.g. Zerodha Kite, Elon Pro 2)") || "").trim(); if (!name) return;
+  try { const r = await api("/api/openaiap/sites", { json: { name, copy_from: OA.site } });
+    $("#oa-site-msg").innerHTML = `<span class="green">${esc(r.name)} added (strategy settings copied from the current website; mode off) - log in and record its flows</span>`;
+    await oaSites(); oaSwitch(r.id); }
+  catch (e) { oaErr("#oa-site-msg", e); }
+};
+$("#oa-site-ren").onclick = async () => {
+  const cur = OA.sites.find(x => x.id === OA.site); const name = (prompt("New name", cur ? cur.name : "") || "").trim(); if (!name) return;
+  try { await api(`/api/openaiap/sites/${encodeURIComponent(OA.site)}`, { method: "PUT", json: { name } }); oaSites(); } catch (e) { oaErr("#oa-site-msg", e); }
+};
+$("#oa-site-del").onclick = async () => {
+  if (!confirmTwice($("#oa-site-del"), "Click again: remove this website and its flows")) return;
+  try { await api(`/api/openaiap/sites/${encodeURIComponent(OA.site)}`, { method: "DELETE" }); OA.site = "removed"; oaSwitch("default"); }
+  catch (e) { oaErr("#oa-site-msg", e); }
+};
+
+// ---- several automations per website
+function oaFillAuto(a) {
+  OA.wantWl = a.watchlist || "";
+  if (OA.wantWl && ![...$("#oa-wl").options].some(o => o.value === OA.wantWl)) $("#oa-wl").add(new Option(OA.wantWl, OA.wantWl));
+  $("#oa-wl").value = OA.wantWl; $("#oa-symbols").disabled = !!a.watchlist;
+  $("#oa-symbols").value = a.symbols.join(","); $("#oa-symbols").dispatchEvent(new Event("sp:refresh")); oaFillParams(a.params);
+}
+function oaAutoTabs(st) {
+  const as = st.automations || [];
+  $("#oa-auto-tabs").innerHTML = as.map(x => `<button type="button" role="tab" class="oa-site${x.id === OA.aid ? " on" : ""}" data-aid="${esc(x.id)}" aria-selected="${x.id === OA.aid}">
+    <b>${esc(x.name)}</b> <span class="xs t3">${x.enabled ? '<span class="green">ON</span>' : "off"} · ${x.watchlist ? "list " + esc(x.watchlist) : x.symbols + " symbols"}</span></button>`).join("");
+  $$("#oa-auto-tabs [data-aid]").forEach(b => b.onclick = () => oaPickAuto(b.dataset.aid));
+  $("#oa-auto-del").hidden = OA.aid === "main";
+}
+async function oaPickAuto(aid) {
+  if (aid === OA.aid) return;
+  OA.aid = aid; store.set("yx_oa_aid_" + OA.site, aid);
+  try { oaFillAuto(await api(oaU("/api/openaiap/auto"))); $("#oa-map tbody").innerHTML = ""; await oaLoad(false); oaRenderMap(); } catch (e) { oaErr("#oa-auto-msg", e); }
+}
+async function oaWatchlists() {
+  try { const wl = await api("/api/watchlists"); OA.lists = wl; const cur = $("#oa-wl").value;
+    $("#oa-wl").innerHTML = `<option value="">— the symbols typed here —</option>` + Object.keys(wl).map(n => `<option value="${esc(n)}">${esc(n)} (${wl[n].length})</option>`).join("");
+    $("#oa-wl").value = cur || OA.wantWl || ""; } catch (e) {}
+}
+$("#oa-wl").onchange = () => {
+  const n = $("#oa-wl").value; $("#oa-symbols").disabled = !!n;
+  if (n && OA.lists && OA.lists[n]) { $("#oa-symbols").value = OA.lists[n].join(","); $("#oa-symbols").dispatchEvent(new Event("sp:refresh")); oaRenderMap(); }
+  $("#oa-auto-msg").textContent = "press Save settings to keep it";
+};
+$("#oa-auto-add").onclick = async () => {
+  const name = (prompt("Name of the new automation (e.g. Index futures, Watchlist B)") || "").trim(); if (!name) return;
+  try { const a = await api(oaU("/api/openaiap/autos"), { json: { name, copy_from: OA.aid } });
+    $("#oa-auto-msg").innerHTML = `<span class="green">${esc(a.name)} created with the current settings - choose its symbols or watchlist</span>`; await oaPickAuto(a.id); }
+  catch (e) { oaErr("#oa-auto-msg", e); }
+};
+$("#oa-auto-ren").onclick = async () => {
+  const cur = ((OA.st || {}).automations || []).find(x => x.id === OA.aid); const name = (prompt("New name", cur ? cur.name : "") || "").trim(); if (!name) return;
+  try { await api(oaU("/api/openaiap/auto"), { method: "PUT", json: { name } }); oaLoad(false); } catch (e) { oaErr("#oa-auto-msg", e); }
+};
+$("#oa-auto-del").onclick = async () => {
+  if (!confirmTwice($("#oa-auto-del"), "Click again to remove this automation")) return;
+  try { await api(oaU(`/api/openaiap/autos/${encodeURIComponent(OA.aid)}`), { method: "DELETE" }); OA.aid = "x"; await oaPickAuto("main"); } catch (e) { oaErr("#oa-auto-msg", e); }
+};
+$("#oa-astopclose").onclick = async () => {
+  if (!confirmTwice($("#oa-astopclose"), "Click again: stop and close its positions")) return;
+  try { const r = await api(oaU("/api/openaiap/auto/stop-close"), { method: "POST" });
+    $("#oa-auto-msg").innerHTML = `<span class="amber">stopped${r.close_sent ? "; closing its positions through the web flows" : " (no open positions)"}</span>`; oaLoad(false); }
+  catch (e) { oaErr("#oa-auto-msg", e); }
+};
+
+$("#oa-map-all").onchange = () => { $("#oa-map tbody").innerHTML = ""; oaRenderMap(); };
+
+let oaInited = false, oaTick = 0;
+async function oaLoad(first) {
+  if (first || ++oaTick % 3 === 0) oaSites();
+  if (!oaInited) { oaInited = true; makeSymPicker($("#oa-symbols")); $("#oa-symbols").addEventListener("change", oaRenderMap); }
+  try {
+    const st = await api(oaU("/api/openaiap/status"));
+    if (first) {
+      [OA.flows, OA.map] = await Promise.all([api(oaU("/api/openaiap/flows")), api(oaU("/api/openaiap/mapping"))]);
+      try { OA.lk = (await api(oaU("/api/openaiap/symbols"))).lookups; } catch (e) {}
+      oaFillCfg(st.config); oaAsOptions(st);
+      if (!OA.loaded) { OA.loaded = true; OA.st = st; oaPickFlow(OA.flow);
+        oaFillAuto(st.auto);
+        if (!$("#oa-url").value) $("#oa-url").value = st.browser.url || st.config.start_url || ""; }
+    }
+    if (st.aid !== OA.aid) { OA.aid = st.aid; store.set("yx_oa_aid_" + OA.site, st.aid); }
+    oaAutoTabs(st);
+    if (first) oaWatchlists();
+    oaRender(st);
+    if (first || !$("#oa-map").contains(document.activeElement)) oaRenderMap();
+    oaLog();
+  } catch (e) { oaErr("#oa-msg", e); }
+}
+setInterval(() => { if (curTab === "oa" && !document.hidden) oaLoad(false); }, 2000);
+
+
+// ---------------------------------------------------------------- Automations: every automation, every website + MT5
+const AU = { data: null };
+function auStatus(a, mkt) {
+  if (a.halted) return ["bad", `STOPPED: ${a.halted}`];
+  if (!a.enabled) return ["", "off"];
+  if (a.mode === "off") return ["bad", "ON but the website's mode is Off"];
+  if (a.unmapped.length) return ["bad", `${a.unmapped.length} symbol(s) not mapped`];
+  return mkt ? ["live", a.mode === "dry_run" ? "running · dry run (nothing sent)" : `running · ${a.mode === "live" ? "LIVE money" : "demo"}`]
+             : ["armed", `armed · starts 09:15 · ${a.mode === "dry_run" ? "dry run" : a.mode}`];
+}
+function auRender(d) {
+  const rows = d.automations, on = rows.filter(a => a.enabled), mkt = d.market_open;
+  const card = (k, v, sub = "", cl = "") => `<div class="card"><div class="k">${k}</div><div class="v ${cl}">${v}</div>${sub ? `<div class="s">${sub}</div>` : ""}</div>`;
+  const pnl = rows.reduce((t, a) => t + (a.pnl || 0), 0), lots = rows.reduce((t, a) => t + (a.open_lots || 0), 0);
+  $("#au-cards").innerHTML = card("Market", mkt ? "open" : "closed", `${esc(d.now)} IST · trading 09:15-15:30`, mkt ? "green" : "")
+    + card("Automations", `${on.length} on`, `of ${rows.length} · ${new Set(rows.map(a => a.site_name)).size} venue(s)`, on.length ? "green" : "")
+    + card("Open lots", lots, "across every automation")
+    + card("Today (calls)", inrS(pnl), "zone rules on today's Upstox candles", cls(pnl));
+  $("#au-clock").textContent = `updated ${d.now}`;
+  $("#au-list").innerHTML = rows.map((a, i) => { const [cl, txt] = auStatus(a, mkt), p = a.params || {};
+    const w = a.workers;
+    return `<div class="au-card ${cl}" data-i="${i}">
+      <div class="row"><h3>${esc(a.name)}</h3><span class="pill xs">${esc(a.site_name)}</span><span class="grow"></span><span class="xs ${cl === "bad" ? "red" : cl === "live" ? "green" : "t3"}">${esc(txt)}</span></div>
+      <dl class="au-kv">
+        <dt>Symbols</dt><dd>${a.watchlist ? `watchlist <b>${esc(a.watchlist)}</b> · ` : ""}${a.symbols.length} ${a.symbols.length ? `<span class="xs t3">${esc(a.symbols.slice(0, 8).join(", "))}${a.symbols.length > 8 ? " …" : ""}</span>` : '<span class="amber">none</span>'}</dd>
+        <dt>Rules</dt><dd class="xs">${p.max_cycles} entr${p.max_cycles > 1 ? "ies" : "y"}/day · targets ${esc((p.lot_targets || [p.target_mult]).join(" / "))}× ${esc(p.target_base || "zone")} · ${p.spike === false ? "candle close" : "spike"} · no entry after ${esc(p.entry_cutoff)} · square-off ${esc(p.square_off)}</dd>
+        <dt>Today</dt><dd>${a.entries} entr${a.entries === 1 ? "y" : "ies"} · ${a.open_lots} open lot${a.open_lots === 1 ? "" : "s"}${a.pnl != null ? ` · <span class="${cls(a.pnl)}">${inrS(a.pnl)}</span>` : ""}${a.positions.length ? ` · ${a.positions.map(x => `<span class="pill ${x.type === "buy" ? "buy" : "sell"} xs">${esc(x.type.toUpperCase())} ${esc(x.symbol)} ×${x.volume}</span>`).join(" ")}` : ""}</dd>
+        ${w ? `<dt>Workers</dt><dd class="xs">${w.open} tab${w.open === 1 ? "" : "s"} open · ${w.busy} busy · ${w.ready} ready to fire${w.errors.length ? ` · <span class="red">${esc(w.errors[0])}</span>` : ""}</dd>` : ""}
+        ${a.error ? `<dt>Error</dt><dd class="red xs">${esc(a.error)}</dd>` : ""}
+      </dl>
+      <ol class="au-ev">${(a.events || []).slice().reverse().map(e => `<li class="${e.level === "error" ? "red" : e.level === "warn" ? "amber" : ""}"><span class="mono t3">${esc(e.t)}</span> <b>${esc(e.symbol)}</b> ${esc(e.text)}</li>`).join("") || '<li class="t3">no activity today</li>'}</ol>
+      <div class="row">${a.enabled ? `<button type="button" class="sm" data-act="stop">Stop</button>` : `<button type="button" class="sm primary" data-act="start">Start</button>`}
+        <button type="button" class="sm" data-act="open">Open settings</button>${a.venue === "web" ? `<button type="button" class="sm" data-act="live">▦ Live workers</button>` : ""}
+        <span class="grow"></span><button type="button" class="sm danger" data-act="close">Stop &amp; close</button></div>
+    </div>`; }).join("") || '<div class="panel t3">No automations yet - create one in the OpenAIAP tab.</div>';
+  $$("#au-list [data-act]").forEach(b => b.onclick = () => auAct(b, rows[+b.closest(".au-card").dataset.i], b.dataset.act));
+}
+async function auAct(btn, a, act) {
+  const web = a.venue === "web", q = web ? `?site=${encodeURIComponent(a.site)}&aid=${encodeURIComponent(a.id)}` : "";
+  try {
+    if (act === "start" || act === "stop") {
+      await api(web ? `/api/openaiap/auto${q}` : "/api/mt5/auto", { method: "PUT", json: { enabled: act === "start" } });
+      $("#au-msg").innerHTML = `<span class="green">${esc(a.name)} (${esc(a.site_name)}) ${act === "start" ? "started" : "stopped"}</span>`;
+    } else if (act === "close") {
+      if (!confirmTwice(btn, "Click again: stop and close")) return;
+      const r = await api(web ? `/api/openaiap/auto/stop-close${q}` : "/api/mt5/close-all", { method: "POST" });
+      $("#au-msg").innerHTML = `<span class="amber">${esc(a.name)} stopped${r.close_sent ? "; closing its positions" : ""}</span>`;
+    } else if (act === "open" || act === "live") {
+      if (!web) { showTab("mt5"); return; }
+      store.set("yx_oa_aid_" + a.site, a.id);
+      if (OA.site !== a.site) oaSwitch(a.site);
+      else { OA.aid = a.id; OA.loaded = false; $("#oa-map tbody").innerHTML = ""; }   // the tab's load fills this automation
+      showTab("oa");
+      if (act === "live") setTimeout(oaLiveOpen, 300);
+      return;
+    }
+    auLoad();
+  } catch (e) { $("#au-msg").innerHTML = `<span class="red">${esc(a.name)}: ${esc(e.message)}</span>`; }
+}
+async function auLoad() {
+  try { AU.data = await api("/api/openaiap/overview"); auRender(AU.data); } catch (e) { $("#au-msg").innerHTML = `<span class="red">${esc(e.message)}</span>`; }
+}
+setInterval(() => { if (curTab === "autos" && !document.hidden) auLoad(); }, 3000);

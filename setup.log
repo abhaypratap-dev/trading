@@ -1,6 +1,6 @@
 
 [1;34m==> Checking this Mac[0m
-CPU: arm64   RAM: 24 GB   Free disk: 1601 GB
+CPU: arm64   RAM: 24 GB   Free disk: 1597 GB
 Docker: Docker version 29.9.2, build a82e528
 Ollama CLI: /usr/local/bin/ollama
 
@@ -13,113 +13,115 @@ Ollama CLI: /usr/local/bin/ollama
 #1 DONE 0.0s
 
 #2 [scheduler internal] load build definition from Dockerfile
-#2 transferring dockerfile: 692B done
+#2 transferring dockerfile: 928B done
 #2 DONE 0.0s
 
-#3 [api internal] load metadata for docker.io/library/python:3.12-slim
-#3 DONE 2.7s
+#3 [sandbox internal] load metadata for docker.io/library/python:3.12-slim
+#3 DONE 0.8s
 
-#4 [scheduler internal] load .dockerignore
+#4 [api internal] load .dockerignore
 #4 transferring context: 2B done
 #4 DONE 0.0s
 
-#5 [api 1/9] FROM docker.io/library/python:3.12-slim@sha256:aa943ce411423c7582288f18707ff66eddcbaeb510502d747a72aeb34f30d159
-#5 resolve docker.io/library/python:3.12-slim@sha256:aa943ce411423c7582288f18707ff66eddcbaeb510502d747a72aeb34f30d159 done
+#5 [sandbox  1/10] FROM docker.io/library/python:3.12-slim@sha256:b18b261e1b4974b4f321451ad5251ded85abb22c2b8b262da527dda1d031ab30
+#5 resolve docker.io/library/python:3.12-slim@sha256:b18b261e1b4974b4f321451ad5251ded85abb22c2b8b262da527dda1d031ab30 done
 #5 DONE 0.0s
 
 #6 [sandbox internal] load build context
-#6 transferring context: 1.18MB 0.0s done
+#6 transferring context: 6.65kB done
 #6 DONE 0.0s
 
-#7 [api 4/9] COPY backend/requirements.txt /app/backend/requirements.txt
+#7 [scheduler  3/10] WORKDIR /app
 #7 CACHED
 
-#8 [api 2/9] RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 curl tzdata && rm -rf /var/lib/apt/lists/*
+#8 [scheduler  8/10] COPY web /app/web
 #8 CACHED
 
-#9 [api 3/9] WORKDIR /app
+#9 [scheduler  2/10] RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 curl tzdata && rm -rf /var/lib/apt/lists/*
 #9 CACHED
 
-#10 [api 5/9] RUN pip install --prefer-binary --retries 10 --timeout 60 -r /app/backend/requirements.txt
+#10 [scheduler  7/10] COPY backend /app/backend
 #10 CACHED
 
-#11 [api 6/9] COPY backend /app/backend
-#11 DONE 0.0s
+#11 [scheduler  5/10] RUN pip install --prefer-binary --retries 10 --timeout 60 -r /app/backend/requirements.txt
+#11 CACHED
 
-#12 [api 7/9] COPY web /app/web
-#12 DONE 0.0s
+#12 [scheduler  4/10] COPY backend/requirements.txt /app/backend/requirements.txt
+#12 CACHED
 
-#13 [sandbox 8/9] WORKDIR /app/backend
-#13 DONE 0.0s
+#13 [scheduler  6/10] RUN python -m playwright install --with-deps chromium && chmod -R a+rX /ms-playwright
+#13 CACHED
 
-#14 [api 9/9] RUN useradd -m -u 1000 yonexis && mkdir -p /app/data /sandbox_queue && chown -R yonexis /app /sandbox_queue
-#14 DONE 0.2s
+#14 [scheduler  9/10] WORKDIR /app/backend
+#14 CACHED
 
-#15 [api] exporting to image
-#15 exporting layers 0.1s done
-#15 exporting manifest sha256:262973f69ec051ba38f6b000dde40698469da7aaaa08c866a5344bbb9d251ab3 done
-#15 exporting config sha256:df6865e43a6b10871c1b5d8ed3aed32a7c78abc2309369f01a885db429313e51 0.0s done
-#15 exporting attestation manifest sha256:61ec044d1b480dc06b6677b494f4b7db40118fc8c2a11232a6cdf1b1d7e70a32 0.0s done
-#15 exporting manifest list sha256:a9de4b55060e1fe9061e67865983dcb19cac9ece69ed14dc92f30fe6d7dbebd6
-#15 exporting manifest list sha256:a9de4b55060e1fe9061e67865983dcb19cac9ece69ed14dc92f30fe6d7dbebd6 done
-#15 naming to docker.io/library/yonexis-app:latest done
-#15 unpacking to docker.io/library/yonexis-app:latest 0.1s done
-#15 DONE 0.2s
+#15 [sandbox 10/10] RUN useradd -m -u 1000 yonexis && mkdir -p /app/data /sandbox_queue && chown -R yonexis /app /sandbox_queue
+#15 CACHED
 
-#16 [sandbox] exporting to image
-#16 exporting layers 0.1s done
-#16 exporting manifest sha256:23d5c5acb24ec6e9d2e1cb87e57a499fdbc7078f1582e333a6c69e65957f2378 done
-#16 exporting config sha256:3d19945ff646ea3ea3cad40bb5a44f398119978d7c784d0a482693ab84d50857 done
-#16 exporting attestation manifest sha256:948a681ee05c4caf225abe95141380066071ee30cb10f0613775186d7d1c83a9 0.0s done
-#16 exporting manifest list sha256:f41d048c62816b5f23f640ea863faa7a22a4e897a80c0cb6707fa15bb5127379 0.0s done
+#16 [api] exporting to image
+#16 exporting layers done
+#16 exporting manifest sha256:202494ae5a2eee66f06880c38ff5a81e1d6750e67cf0d0d5794d05dcd68ed08d done
+#16 exporting config sha256:896587d7cd008455e62c6d3addcdb070ba7ec903862211b9008b99cecc410ad5 done
+#16 exporting attestation manifest sha256:424ab037474e3f86b2139aa351bde8f16c155d07259b0c2a06b7c281963de1af 0.0s done
+#16 exporting manifest list sha256:0f2d9ca646a5fcf08a3b3cb1f0ddf9c4be3ab6276f2b603819dfcebd7cce6d43 done
 #16 naming to docker.io/library/yonexis-app:latest done
-#16 unpacking to docker.io/library/yonexis-app:latest 0.1s done
-#16 DONE 0.2s
+#16 unpacking to docker.io/library/yonexis-app:latest done
+#16 DONE 0.0s
 
-#17 [scheduler] exporting to image
-#17 exporting layers 0.1s done
-#17 exporting manifest sha256:577b266711292def76f536cd3ee2cfe705b9724bead5515faea574632e240184 0.0s done
-#17 exporting config sha256:0f6e13c6e6584d8741f475aaa59bb83160ef91091959a3a8bf36d136ae8be40a done
-#17 exporting attestation manifest sha256:a64e3fe9b336943492798adc1c8fefd956b134706a8719d3dd0514d1a2be6a72 0.0s done
-#17 exporting manifest list sha256:2ce59924c8ba85fca8876250764c68640e3a57428c4f27970c2bc9d4c6f109fa 0.0s done
+#17 [sandbox] exporting to image
+#17 exporting layers done
+#17 exporting manifest sha256:785499ee60b27ca136af6b877aa4ab0f42453ea0e43f3ee1e98b8e1888c41890 done
+#17 exporting config sha256:c36a079f9ffe2d74551e483024d8651a99f1eaa9b0fcc6b5dad1dc3a87a264c0 done
+#17 exporting attestation manifest sha256:d809ac10d3696df1af362c84e41b3d64c49cd095b315850ab1bb4ff471bad048 0.0s done
+#17 exporting manifest list sha256:6da9dfeab029ff50081a1a5c7ee51734c9b08f40cd592df9e9d906c54976cc54 done
 #17 naming to docker.io/library/yonexis-app:latest done
-#17 unpacking to docker.io/library/yonexis-app:latest 0.1s done
-#17 DONE 0.2s
+#17 unpacking to docker.io/library/yonexis-app:latest done
+#17 DONE 0.1s
 
-#18 [scheduler] resolving provenance for metadata file
-#18 DONE 0.0s
+#18 [scheduler] exporting to image
+#18 exporting layers done
+#18 exporting manifest sha256:203684b7479c0ba495a5dd05432462b41752f5f72600475b68a70290a7c7acbf done
+#18 exporting config sha256:5f47689a0bdd7f7c4d55c379e517143f4a37ee157998d9b617ee13712b3a1863 done
+#18 exporting attestation manifest sha256:b3f361684566b8433652ae5770a509e1868cc8a614458d6b1e15062d047c68fb done
+#18 exporting manifest list sha256:229404047ae418d0710106a61a39d39a5985b22a4ec12dd2e79dc62e077e6547 done
+#18 naming to docker.io/library/yonexis-app:latest done
+#18 unpacking to docker.io/library/yonexis-app:latest done
+#18 DONE 0.1s
 
-#19 [sandbox] resolving provenance for metadata file
+#19 [api] resolving provenance for metadata file
 #19 DONE 0.0s
 
-#20 [api] resolving provenance for metadata file
+#20 [sandbox] resolving provenance for metadata file
 #20 DONE 0.0s
+
+#21 [scheduler] resolving provenance for metadata file
+#21 DONE 0.0s
  Image yonexis-app:latest Built 
  Image yonexis-app:latest Built 
  Image yonexis-app:latest Built 
- Network yonexis_default Creating 
  Container yonexis-sandbox-1 Creating 
+ Network yonexis_default Creating 
  Network yonexis_default Creating 
  Network yonexis_default Created 
  Network yonexis_default Created 
  Container yonexis-db-1 Creating 
  Container yonexis-sandbox-1 Created 
  Container yonexis-db-1 Created 
- Container yonexis-scheduler-1 Creating 
  Container yonexis-api-1 Creating 
+ Container yonexis-scheduler-1 Creating 
  Container yonexis-scheduler-1 Created 
  Container yonexis-api-1 Created 
- Container yonexis-sandbox-1 Starting 
  Container yonexis-db-1 Starting 
- Container yonexis-sandbox-1 Started 
+ Container yonexis-sandbox-1 Starting 
  Container yonexis-db-1 Started 
  Container yonexis-db-1 Waiting 
+ Container yonexis-sandbox-1 Started 
  Container yonexis-db-1 Waiting 
  Container yonexis-db-1 Healthy 
  Container yonexis-api-1 Starting 
+ Container yonexis-api-1 Started 
  Container yonexis-db-1 Healthy 
  Container yonexis-scheduler-1 Starting 
- Container yonexis-api-1 Started 
  Container yonexis-scheduler-1 Started 
 
 [1;34m==> Waiting for the API[0m

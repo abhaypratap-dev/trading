@@ -46,7 +46,14 @@ services:
       SANDBOX_QUEUE_DIR: /sandbox_queue
       SANDBOX_MODE: queue
       TZ: Asia/Kolkata
-    ports: ["127.0.0.1:8000:8000"]
+    # this Mac only by default; YONEXIS_BIND=0.0.0.0 in .env opens the dashboard to your Wi-Fi (http://<Mac IP>:8000)
+    ports: ["${YONEXIS_BIND:-127.0.0.1}:8000:8000"]
+    shm_size: "1gb"             # headless Chromium for the OpenAIAP tab
+    volumes:
+      - ./data:/app/data
+      - ./data/sandbox_queue:/sandbox_queue
+      # MetaTrader 5 "Common Files" folder (file bridge with the YonexisBridge EA). scripts/mt5-setup.sh sets MT5_COMMON_DIR.
+      - ${MT5_COMMON_DIR:-./data/mt5_common}:/mt5_common
     depends_on:
       db: { condition: service_healthy }
       sandbox: { condition: service_started }

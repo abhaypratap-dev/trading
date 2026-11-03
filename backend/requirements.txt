@@ -14,3 +14,4 @@ pyarrow>=16
 pytest>=8
 websocket-client>=1.8
 protobuf>=4.25
+playwright>=1.47

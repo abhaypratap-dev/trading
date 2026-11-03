@@ -3,12 +3,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -84,6 +85,10 @@ async def lifespan(app: FastAPI):
         if settings.LIVE_CONNECTOR == "upstox" and not db.get_setting("futures_seeded_v1"):
             # one-time: add index futures + futures of the watchlist stocks (admin asked for both)
             asyncio.get_running_loop().run_in_executor(None, _seed_futures_once)
+        from yonexis.mt5 import auto as mt5auto
+        mt5auto.start()                               # MT5 automation loop (idle until enabled in the MT5 tab)
+        from yonexis.openaiap import executor as oaexec
+        oaexec.start_all()                            # OpenAIAP: one web-flow automation loop per website (idle until enabled)
     yield
     if live.engine:
         live.engine.stop()
@@ -100,6 +105,9 @@ def admin(x_admin_token: str | None = Header(default=None)) -> None:
 
 
 A = [Depends(admin)]
+
+from yonexis.openaiap.api import router as openaiap_router      # noqa: E402  (OpenAIAP tab: web automation)
+app.include_router(openaiap_router, dependencies=A)
 
 
 # ====================================================================== helpers
@@ -625,6 +633,313 @@ def zone_ai_search(b: ZoneAIBody):
 @app.get("/api/zone/ai-last-params", dependencies=A)
 def zone_ai_last():
     return db.get_setting("zone_ai_last_params") or {}
+
+
+# ---------------------------------------------------------------------- MetaTrader 5
+class MT5Config(BaseModel):
+    mode: str | None = None
+    transport: str | None = None
+    live_confirm: str | None = None
+    magic: int | None = None
+    deviation: int | None = None
+    max_volume: float | None = None
+    max_positions: int | None = None
+    max_daily_loss: float | None = None
+
+
+def _mt5_status_payload() -> dict:
+    from yonexis.mt5 import auto as mt5auto, config as mcfg
+    from yonexis.mt5.bridge import get_bridge
+    b = get_bridge()
+    ready = b.ready()
+    st = b.state or {}
+    c = mcfg.get()
+    mp = mcfg.mapping()
+    quotes = []
+    for ys, m in mp.items():
+        q = (st.get("quotes") or {}).get(m["mt5"]) or {}
+        u = (live.engine.quote(ys, strict=True) or {}).get("ltp") if live.engine else None
+        mid = (q["bid"] + q["ask"]) / 2 if q.get("bid") and q.get("ask") else None
+        quotes.append({"symbol": ys, "mt5": m["mt5"], "upstox": u, "bid": q.get("bid"), "ask": q.get("ask"),
+                       "gap": round(mid - u, 4) if (mid and u) else None, "volume": m["volume"], "price": m["price"],
+                       "volume_min": q.get("volume_min"), "volume_step": q.get("volume_step")})
+    mine = [x for x in (st.get("positions") or []) if int(x.get("magic") or 0) == int(c["magic"])]
+    return {"config": mcfg.public(), "health": b.health(), "transport_ready": {"ok": ready[0], "detail": ready[1]},
+            "account": st.get("account"), "trade_allowed": st.get("trade_allowed"), "mt5_connected": st.get("connected"),
+            "common_path": st.get("common_path"), "ea_version": st.get("ea"), "ea_diag": st.get("diag"), "positions": mine, "other_positions": len(st.get("positions") or []) - len(mine),
+            "deals": [d for d in (st.get("deals") or []) if int(d.get("magic") or 0) == int(c["magic"])][-100:],
+            "quotes": quotes, "symbols_known": len(b.symbols), "auto": mcfg.auto(),
+            "trader": mt5auto.trader.snapshot() if mt5auto.trader else None,
+            "pnl": _mt5_pnl(mp, st, c)}
+
+
+def _mt5_pnl(mp: dict, st: dict, c: dict) -> dict | None:
+    from yonexis.mt5 import config as mcfg, pnl
+    try:
+        return pnl.day_pnl(live.engine, mp, mcfg.auto(), st, int(c["magic"]))
+    except Exception:
+        return None
+
+
+@app.get("/api/mt5/status", dependencies=A)
+def mt5_status():
+    return _mt5_status_payload()
+
+
+@app.put("/api/mt5/config", dependencies=A)
+def mt5_config_put(b: MT5Config):
+    from yonexis.mt5 import config as mcfg
+    ch = {k: v for k, v in b.model_dump().items() if v is not None}
+    if "mode" in ch and ch["mode"] not in mcfg.MODES:
+        raise HTTPException(400, f"mode must be one of {mcfg.MODES}")
+    if "transport" in ch and ch["transport"] not in ("file", "web"):
+        raise HTTPException(400, "transport must be file or web")
+    if ch.get("mode") == "live":
+        typed = ch.get("live_confirm", mcfg.get().get("live_confirm"))
+        if typed != mcfg.LIVE_PHRASE:
+            raise HTTPException(400, f"to trade a REAL account type {mcfg.LIVE_PHRASE} in the confirmation box")
+    elif "mode" in ch:
+        ch["live_confirm"] = ""                    # leaving live always clears the confirmation
+    if "max_volume" in ch and not (0 < ch["max_volume"] <= 1000):
+        raise HTTPException(400, "max volume per order must be above 0")
+    c = mcfg.save(ch)
+    db.log("admin", "mt5_config", {k: v for k, v in ch.items() if k != "live_confirm"})
+    return mcfg.public() | {"saved": True, "mode": c["mode"]}
+
+
+@app.post("/api/mt5/token", dependencies=A)
+def mt5_token_new():
+    import secrets
+    from yonexis.mt5 import config as mcfg
+    mcfg.save({"token": secrets.token_urlsafe(24)})
+    return mcfg.public()
+
+
+@app.get("/api/mt5/ea", dependencies=A)
+def mt5_ea_download():
+    from fastapi.responses import FileResponse
+    p = Path(__file__).resolve().parents[1] / "mt5" / "YonexisBridge.mq5"
+    return FileResponse(p, filename="YonexisBridge.mq5", media_type="text/plain")
+
+
+@app.post("/api/mt5/ping", dependencies=A)
+def mt5_ping():
+    from yonexis.mt5.bridge import get_bridge
+    r = get_bridge().call("ping", timeout=3)
+    return r
+
+
+@app.post("/api/mt5/symbols/refresh", dependencies=A)
+def mt5_symbols_refresh():
+    """Ask the EA for its full symbol list. The EA builds it in the background (thousands of symbols on some servers);
+    GET /api/mt5/symbols shows the count once it has arrived, and the state shows the progress meanwhile."""
+    from yonexis.mt5.bridge import get_bridge
+    b = get_bridge()
+    r = b.call("symbols", timeout=8)
+    return {"result": r, "count": len(b.symbols), "total": r.get("count")}
+
+
+@app.get("/api/mt5/symbols", dependencies=A)
+def mt5_symbols(q: str = "", limit: int = 50):
+    from yonexis.mt5.bridge import get_bridge
+    b = get_bridge()
+    b._pump()
+    ql = q.lower().strip()
+    rows = [s for s in b.symbols if not ql or ql in s.get("name", "").lower() or ql in s.get("desc", "").lower()
+            or ql in s.get("path", "").lower()]
+    return {"count": len(b.symbols), "progress": (b.state or {}).get("symbols_progress") or "",
+            "symbols": rows[:max(1, min(limit, 500))]}
+
+
+class MT5Suggest(BaseModel):
+    symbols: list[str]
+
+
+@app.post("/api/mt5/suggest", dependencies=A)
+def mt5_suggest(b: MT5Suggest):
+    from yonexis.mt5 import config as mcfg
+    from yonexis.mt5.bridge import get_bridge
+    br = get_bridge()
+    br._pump()
+    if not br.symbols:
+        raise HTTPException(400, "load the MT5 symbol list first")
+    return mcfg.suggest(b.symbols, [x.get("name", "") for x in br.symbols])
+
+
+@app.get("/api/mt5/mapping", dependencies=A)
+def mt5_mapping_get():
+    from yonexis.mt5 import config as mcfg
+    return mcfg.mapping()
+
+
+@app.put("/api/mt5/mapping", dependencies=A)
+def mt5_mapping_put(body: dict):
+    from yonexis.mt5 import config as mcfg
+    from yonexis.mt5.bridge import get_bridge
+    m = mcfg.save_mapping(body.get("mapping") or {})
+    db.log("admin", "mt5_mapping", {"symbols": len(m)})
+    known = {x.get("name", "").upper() for x in get_bridge().symbols}
+    unknown = sorted(k for k, v in mcfg.mapping().items() if known and v["mt5"].upper() not in known)
+    return {"mapping": m, "unknown": unknown}
+
+
+class MT5Auto(BaseModel):
+    enabled: bool | None = None
+    watchlist: str | None = None
+    symbols: list[str] | None = None
+    params: dict | None = None
+
+
+@app.get("/api/mt5/auto", dependencies=A)
+def mt5_auto_get():
+    from yonexis.mt5 import config as mcfg
+    return mcfg.auto()
+
+
+@app.put("/api/mt5/auto", dependencies=A)
+def mt5_auto_put(b: MT5Auto):
+    from yonexis import zone_lab
+    from yonexis.mt5 import auto as mt5auto, config as mcfg
+    ch = {k: v for k, v in b.model_dump().items() if v is not None}
+    if "symbols" in ch:
+        ch["symbols"] = sorted({s.strip().upper() for s in ch["symbols"] if s.strip()})
+    if "params" in ch:
+        p = ch["params"]
+        lt = [float(x) for x in (p.get("lot_targets") or []) if x not in (None, "")]
+        if lt and any(not (0.1 <= x <= 50) for x in lt):
+            raise HTTPException(400, "targets must be between 0.1 and 50")
+        if lt:
+            p["lot_targets"], p["target_mult"] = lt[:10], lt[0]
+        if p.get("target_base") and p["target_base"] not in zone_lab.TARGET_BASES:
+            raise HTTPException(400, "target multiplier must be zone or iz")
+        for k in ("entry_cutoff", "square_off"):
+            if p.get(k):
+                p[k] = _check_hhmm(p[k], k.replace("_", " "))
+        if p.get("max_cycles") is not None and not (1 <= int(p["max_cycles"]) <= 10):
+            raise HTTPException(400, "entries per day must be 1-10")
+    new = {**mcfg.auto(), **ch}
+    if new.get("enabled"):
+        missing = [s for s in new["symbols"] if s not in mcfg.mapping()]
+        if not new["symbols"]:
+            raise HTTPException(400, "choose the symbols (or a watchlist) to automate")
+        if missing:
+            raise HTTPException(400, f"map these to an MT5 symbol first (Symbol mapping): {', '.join(missing[:20])}")
+        if mcfg.get()["mode"] == "off":
+            raise HTTPException(400, "MT5 trading is off - choose Dry run, Demo or Live in System > MT5 connection first")
+    a = mcfg.save_auto(ch)
+    if a["enabled"] and live.engine:
+        for s in a["symbols"]:
+            try:
+                live.engine.add_symbol(s)              # make sure Upstox streams it
+            except Exception:
+                pass
+    mt5auto.start()
+    db.log("admin", "mt5_auto", {"enabled": a["enabled"], "symbols": len(a["symbols"]), "params": a["params"]})
+    return a
+
+
+@app.post("/api/mt5/close-all", dependencies=A)
+def mt5_close_all():
+    """Kill switch: stop the automation and close every YONEXIS position in MT5."""
+    from yonexis.mt5 import auto as mt5auto, config as mcfg
+    mcfg.save_auto({"enabled": False})
+    t = mt5auto.start()
+    cid = t.close_all(why="admin kill switch")
+    db.log("admin", "mt5_close_all", {"sent": bool(cid)})
+    return {"stopped": True, "close_sent": bool(cid)}
+
+
+class MT5Test(BaseModel):
+    symbol: str
+    side: str = "BUY"
+
+
+@app.post("/api/mt5/test-order", dependencies=A)
+def mt5_test_order(b: MT5Test):
+    """One minimum-volume market order on a DEMO account, to check the bridge end to end."""
+    from yonexis.mt5 import auto as mt5auto, config as mcfg
+    from yonexis.mt5.bridge import get_bridge
+    c = mcfg.get()
+    if c["mode"] != "demo":
+        raise HTTPException(400, "test orders are only allowed in Demo mode")
+    m = mcfg.mapping().get(b.symbol.upper())
+    if not m:
+        raise HTTPException(400, f"{b.symbol} has no MT5 symbol mapped")
+    br = get_bridge()
+    ok, why = mt5auto.guard(c, br, 0.0, False, 0)
+    if not ok:
+        raise HTTPException(400, why)
+    r = br.call("buy" if b.side.upper() == "BUY" else "sell", timeout=10, symbol=m["mt5"], volume=0.0, magic=int(c["magic"]),
+                deviation=int(c["deviation"]), comment="YX test")
+    mt5auto.log_event("test", b.symbol.upper(), b.side.lower(), r.get("ok"), r, r.get("latency_ms"))
+    return r
+
+
+@app.post("/api/mt5/test-close", dependencies=A)
+def mt5_test_close(b: MT5Test):
+    from yonexis.mt5 import config as mcfg
+    from yonexis.mt5.bridge import get_bridge
+    c = mcfg.get()
+    m = mcfg.mapping().get(b.symbol.upper())
+    if not m or c["mode"] not in ("demo", "live"):
+        raise HTTPException(400, "nothing to close")
+    return get_bridge().call("close", timeout=10, symbol=m["mt5"], magic=int(c["magic"]), deviation=int(c["deviation"]), comment="YX test")
+
+
+@app.get("/api/mt5/log", dependencies=A)
+def mt5_log(limit: int = 200):
+    from yonexis.mt5 import config as mcfg
+    rows = db.fetch(db.mt5_log, order=db.mt5_log.c.id.desc(), limit=max(1, min(limit, 1000)))
+    st = db.get_setting("mt5_auto_state") or {}
+    params = mcfg.auto()["params"]
+    mults = [float(x) for x in (params.get("lot_targets") or [params.get("target_mult", 1.5)])]
+    for r in rows:
+        r["detail"] = d = db.uj(r["detail"], {})
+        # orders logged before the log kept the trade details: rebuild them from today's zone (spike entries are at
+        # the zone edge, SL the opposite edge, targets edge +/- zone range x multiplier)
+        if r["kind"] in ("order", "blocked", "dry_run") and not d.get("trade") and r["op"] in ("buy", "sell"):
+            z = ((st.get("syms") or {}).get(r["symbol"] or "") or {}).get("zone") if st.get("day") == str(pd.Timestamp(r["ts"]).date()) else None
+            f = d.get("order") or {}
+            if z:
+                buy = r["op"] == "buy"
+                px, rng = (z["high"] if buy else z["low"]), z["high"] - z["low"]
+                d["trade"] = {"side": "BUY" if buy else "SELL", "volume": f.get("volume"), "symbol": f.get("symbol"),
+                              "price": round(px, 2), "sl": round(z["low"] if buy else z["high"], 2), "rebuilt": True,
+                              "targets": [round(px + rng * m if buy else px - rng * m, 2) for m in mults]
+                              if params.get("target_base", "zone") == "zone" else []}
+    return rows
+
+
+@app.post("/api/mt5/bridge")
+async def mt5_bridge_poll(request: Request, x_bridge_token: str | None = Header(default=None)):
+    """Web transport: the EA posts its state + results; the reply is the waiting commands (one per line).
+    Held open up to 1 s when nothing is waiting, so a new command leaves within ~20 ms."""
+    from fastapi.responses import PlainTextResponse
+    from yonexis.mt5 import config as mcfg
+    from yonexis.mt5.bridge import WebBridge, get_bridge
+    c = mcfg.get()
+    if not x_bridge_token or not secrets_compare(x_bridge_token, c["token"]):
+        raise HTTPException(401, "wrong bridge token")
+    b = get_bridge()
+    if not isinstance(b, WebBridge):
+        return PlainTextResponse("")                  # transport is "file": nothing for the web EA
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    b.on_poll(body)
+    end = time.time() + 1.0
+    while time.time() < end:
+        lines = b.pending()
+        if lines:
+            return PlainTextResponse("\n".join(lines) + "\n")
+        await asyncio.sleep(0.02)
+    return PlainTextResponse("")
+
+
+def secrets_compare(a: str, b: str) -> bool:
+    import hmac
+    return hmac.compare_digest(str(a), str(b))
 
 
 # ---------------------------------------------------------------------- named watchlists (stocks + futures)

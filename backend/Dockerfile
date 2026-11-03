@@ -6,6 +6,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 curl t
 WORKDIR /app
 COPY backend/requirements.txt /app/backend/requirements.txt
 RUN pip install --prefer-binary --retries 10 --timeout 60 -r /app/backend/requirements.txt
+# OpenAIAP web automation: headless Chromium (+ its system libraries) in a path the yonexis user can read
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN python -m playwright install --with-deps chromium && chmod -R a+rX /ms-playwright
 
 COPY backend /app/backend
 COPY web /app/web

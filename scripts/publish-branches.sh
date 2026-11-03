@@ -4,10 +4,8 @@
 #   main = the same code for the cloud: deployed with LLM_ENABLED=false (docker-compose.azure.yml), so the AI writing
 #          features are switched off there. Keeping one codebase means fixes in dev reach main with a simple merge.
 set -euo pipefail
-cd "$(dirname "$0")/.."
-git checkout -B dev                      # new branch from the current one, keeps the uncommitted work
-git add -A
-git commit -m "YONEXIS AI tab, AI backtest, data check, continuous futures, cloud mode without AI model
+# usage: scripts/publish-branches.sh ["commit message"]
+DEFAULT_MSG="YONEXIS AI tab, AI backtest, data check, continuous futures, cloud mode without AI model
 
 - YONEXIS AI: zone replay for a day / date range, configurations with lots and per-lot targets,
   Zone / IZ target multiplier, spike option, configurable square-off, refined data, target calculation
@@ -17,7 +15,11 @@ git commit -m "YONEXIS AI tab, AI backtest, data check, continuous futures, clou
 - LLM_ENABLED=false switches the AI model features off (cloud); docker-compose.azure.yml + scripts/deploy-azure.sh
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01KkywERdwLJiEVPVZAXF5pd" || echo "(nothing new to commit)"
+Claude-Session: https://claude.ai/code/session_01KkywERdwLJiEVPVZAXF5pd"
+cd "$(dirname "$0")/.."
+git checkout -B dev                      # new branch from the current one, keeps the uncommitted work
+git add -A
+git commit -m "${1:-$DEFAULT_MSG}" || echo "(nothing new to commit)"
 git push -u origin dev
 git checkout main
 git merge --ff-only dev

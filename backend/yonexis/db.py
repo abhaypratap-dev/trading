@@ -160,6 +160,20 @@ lab_trades = Table(
     Column("net_pnl", Float), Column("ret_pct", Float), Column("r_mult", Float),
 )
 
+mt5_log = Table(                       # every command sent to MetaTrader 5 and its result (audit + latency)
+    "mt5_log", md,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("ts", DateTime, default=datetime.utcnow), Column("kind", String(16)), Column("symbol", String(40)),
+    Column("op", String(16)), Column("ok", Integer), Column("latency_ms", Float), Column("detail", Text),
+)
+
+openaiap_log = Table(                  # every OpenAIAP web flow run for an order, and its result
+    "openaiap_log", md,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("ts", DateTime, default=datetime.utcnow), Column("site", String(40)), Column("kind", String(16)), Column("symbol", String(40)),
+    Column("op", String(16)), Column("ok", Integer), Column("latency_ms", Float), Column("detail", Text),
+)
+
 MIGRATIONS = [
     "ALTER TABLE paper_trades ADD COLUMN init_stop FLOAT",
     "ALTER TABLE paper_trades ADD COLUMN trail FLOAT",
@@ -168,6 +182,7 @@ MIGRATIONS = [
     "ALTER TABLE signals ALTER COLUMN status TYPE VARCHAR(64)",
     "ALTER TABLE signals ADD COLUMN source VARCHAR(16)",
     "ALTER TABLE signals ADD COLUMN created_at TIMESTAMP",
+    "ALTER TABLE openaiap_log ADD COLUMN site VARCHAR(40)",
 ]
 
 
